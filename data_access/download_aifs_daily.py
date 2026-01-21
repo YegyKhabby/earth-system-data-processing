@@ -122,6 +122,10 @@ def request_with_retries(request_fn, retries: int, sleep_s: float):
         try:
             return request_fn()
         except Exception as e:
+            msg = str(e)
+            if "404" in msg or "Not Found" in msg:
+                # Do not retry missing data
+                raise
             attempt += 1
             if attempt > retries:
                 raise
