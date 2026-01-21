@@ -7,7 +7,7 @@ aifs:
 
   # Episode (last 4 days: today and 3 days before)
   episode:
-    days: 4
+    days: 5
     include_today: true
 
   # Forecast lead times (keep moderate)

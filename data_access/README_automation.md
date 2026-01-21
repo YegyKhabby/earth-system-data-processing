@@ -5,13 +5,14 @@ This guide explains how to automatically download ECMWF AIFS forecast data every
 ## Overview
 
 The automation consists of:
-- **[download_aifs_daily.py](download_aifs_daily.py)**: Python script that downloads the last 3 complete days of AIFS data
+- **[download_aifs_daily.py](download_aifs_daily.py)**: Python script driven by `aifs_config.yaml`
+- **[aifs_config.yaml](aifs_config.yaml)**: Configuration for dates, steps, variables, and output paths
 - **[schedule_daily_download.ps1](schedule_daily_download.ps1)**: PowerShell script to set up Windows Task Scheduler
 - **logs/**: Directory where download logs are stored (created automatically)
 
 ## Quick Start
 
-### Option 1: Windows Task Scheduler (Recommended)
+### Option 1: Windows Task Scheduler
 
 1. **Open PowerShell as Administrator**
    - Right-click Start menu → "Windows PowerShell (Admin)" or "Terminal (Admin)"
@@ -33,12 +34,65 @@ The automation consists of:
 
 The script will now run automatically every day at **2:00 PM** (14:00).
 
-### Option 2: Manual Execution
+### Option 2: macOS LaunchAgent
+
+This does not affect Windows users. It installs a per-user LaunchAgent on macOS only.
+
+1. **Create the LaunchAgent**
+   ```bash
+   mkdir -p ~/Library/LaunchAgents
+   cat > ~/Library/LaunchAgents/com.yeg.aifs-download.plist <<'EOF'
+   <?xml version="1.0" encoding="UTF-8"?>
+   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0">
+     <dict>
+       <key>Label</key>
+       <string>com.yeg.aifs-download</string>
+       <key>ProgramArguments</key>
+       <array>
+         <string>/usr/bin/env</string>
+         <string>TMPDIR=/Users/yeganehkhabbazian/Projects/tmp</string>
+         <string>python3</string>
+         <string>/Users/yeganehkhabbazian/Projects/Earth_System/earth-system-data-processing/data_access/download_aifs_daily.py</string>
+         <string>--config</string>
+         <string>/Users/yeganehkhabbazian/Projects/Earth_System/earth-system-data-processing/data_access/aifs_config.yaml</string>
+       </array>
+       <key>WorkingDirectory</key>
+       <string>/Users/yeganehkhabbazian/Projects/Earth_System/earth-system-data-processing</string>
+       <key>StartCalendarInterval</key>
+       <dict>
+         <key>Hour</key><integer>23</integer>
+         <key>Minute</key><integer>0</integer>
+       </dict>
+       <key>StandardOutPath</key>
+       <string>/Users/yeganehkhabbazian/Projects/Earth_System/earth-system-data-processing/data_access/logs/aifs_download_stdout.log</string>
+       <key>StandardErrorPath</key>
+       <string>/Users/yeganehkhabbazian/Projects/Earth_System/earth-system-data-processing/data_access/logs/aifs_download_stderr.log</string>
+       <key>RunAtLoad</key>
+       <true/>
+     </dict>
+   </plist>
+   EOF
+   ```
+
+2. **Load the agent**
+   ```bash
+   launchctl unload ~/Library/LaunchAgents/com.yeg.aifs-download.plist 2>/dev/null
+   launchctl load ~/Library/LaunchAgents/com.yeg.aifs-download.plist
+   ```
+
+3. **Verify**
+   ```bash
+   launchctl list | grep com.yeg.aifs-download
+   ```
+
+### Option 3: Manual Execution
 
 You can run the download script manually anytime:
 
-```powershell
-python download_aifs_daily.py
+```bash
+python data_access/download_aifs_daily.py --config data_access/aifs_config.yaml
 ```
 
 ## Configuration
@@ -55,15 +109,7 @@ Then re-run the script to update the schedule.
 
 ### Change Download Parameters
 
-Edit the `CFG` dictionary in [download_aifs_daily.py](download_aifs_daily.py) (lines 63-72):
-
-```python
-CFG = {
-    "time": 12,               # Forecast initialization time (UTC)
-    "steps": [6, 12, 24],     # Forecast steps (hours)
-    "params": ["2t", "10u", "10v", "msl"],  # Variables
-}
-```
+Edit [aifs_config.yaml](aifs_config.yaml):
 
 Available parameters:
 - **Temperature**: `2t` (2m temp), `skt` (skin temp)
@@ -75,22 +121,22 @@ Available parameters:
 
 ## Task Management
 
-### View task status
+### View task status (Windows)
 ```powershell
 Get-ScheduledTask -TaskName "ECMWF_AIFS_Daily_Download" | Format-List
 ```
 
-### Run task immediately (for testing)
+### Run task immediately (for testing, Windows)
 ```powershell
 Start-ScheduledTask -TaskName "ECMWF_AIFS_Daily_Download"
 ```
 
-### View task history
+### View task history (Windows)
 ```powershell
 Get-ScheduledTaskInfo -TaskName "ECMWF_AIFS_Daily_Download"
 ```
 
-### Remove the scheduled task
+### Remove the scheduled task (Windows)
 ```powershell
 Unregister-ScheduledTask -TaskName "ECMWF_AIFS_Daily_Download" -Confirm:$false
 ```
@@ -109,7 +155,7 @@ Every run creates a log file in `logs/aifs_download_YYYYMMDD.log`:
 ...
 ```
 
-### Check Recent Logs
+### Check Recent Logs (Windows)
 
 ```powershell
 # View today's log
@@ -124,21 +170,21 @@ Get-ChildItem logs\*.log | Sort-Object LastWriteTime -Descending
 
 ## Troubleshooting
 
-### Issue: "Execution policy" error when running PowerShell script
+### Issue: "Execution policy" error when running PowerShell script (Windows)
 
 **Solution**: Temporarily allow script execution:
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
-### Issue: Python not found
+### Issue: Python not found (Windows)
 
 **Solution**: Specify full path to Python in the scheduling script:
 ```powershell
 $PythonPath = "C:\Users\YourName\anaconda3\envs\aifs\python.exe"
 ```
 
-### Issue: Task runs but doesn't download data
+### Issue: Task runs but doesn't download data (Windows)
 
 **Possible causes**:
 1. **Conda environment not activated**: Modify the schedule script to use the conda environment:
@@ -153,7 +199,7 @@ $PythonPath = "C:\Users\YourName\anaconda3\envs\aifs\python.exe"
 
 3. **Data not available yet**: ECMWF releases data with some delay. Run the script later in the day (after 14:00 UTC)
 
-### Issue: Want to use Conda environment
+### Issue: Want to use Conda environment (Windows)
 
 **Solution**: Create an alternative scheduling script:
 
@@ -187,7 +233,7 @@ for file in OUT.glob("*.grib2"):
         logger.warning(f"Could not process {file.name}: {e}")
 ```
 
-### Manual Cleanup
+### Manual Cleanup (Windows example)
 
 ```powershell
 # Delete files older than 7 days
