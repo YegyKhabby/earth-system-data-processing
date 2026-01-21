@@ -1,4 +1,4 @@
-# ECMWF AIFS Data Download and Visualization
+# ECMWF AIFS Data Download (Notebook + Script)
 
 **Author**: Yeganeh Khabbazian  
 **Course**: Earth System Data Processing, University of Cologne, Winter Semester 2025/26  
@@ -7,7 +7,7 @@
 
 ## Overview
 
-This project demonstrates programmatic access to ECMWF's Artificial Intelligence/Integrated Forecasting System (AIFS) Single deterministic forecast data via the ECMWF Open Data API. 
+This project demonstrates programmatic access to ECMWF's Artificial Intelligence/Integrated Forecasting System (AIFS) Single deterministic forecast data via the ECMWF Open Data API. It includes both a **notebook workflow** and a **scripted downloader**.
 
 **About AIFS**: AIFS is a machine learning–based global weather forecasting model operational since February 2025, developed by ECMWF to complement the traditional physics-based Integrated Forecasting System (IFS). The current version was trained on ERA5 reanalysis data (1979–2018) and fine-tuned on operational IFS forecasts (2019–2020), using both pressure-level and surface variables along with auxiliary forcing information such as solar radiation.
 
@@ -34,7 +34,7 @@ conda activate aifs
 
 The environment includes `earthkit-data` (ECMWF Open Data client), `xarray`/`cfgrib` (GRIB2 file handling), `cartopy` (geospatial visualization), and `eccodes` (GRIB decoding backend).
 
-### Running the Download Script
+### Running the Download Script (New Script Workflow)
 
 The automated downloader uses a YAML config file:
 
@@ -51,6 +51,9 @@ TMPDIR=/Users/yeganehkhabbazian/Projects/tmp python data_access/download_aifs_da
 
 Key config settings live in `data_access/aifs_config.yaml` (episode length, init hours, steps, variables, output folder, retries, etc.).  
 The script writes files under `out_dir/YYYY/MM/DD/` and produces a `manifest.csv` summary in the base output directory.
+
+**Script behavior updates (notebook does not include these):**
+- **404 Not Found is skipped immediately** (no repeated retries for missing data).
 
 ### Running the Notebook
 
