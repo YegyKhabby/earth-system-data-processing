@@ -1,0 +1,44 @@
+aifs:
+  source: ecmwf-open-data
+  model: aifs-single
+
+  # Initialization times to compare day vs night
+  init_hours_utc: [0, 12]
+
+  # Episode (last 4 days: today and 3 days before)
+  episode:
+    days: 4
+    include_today: true
+
+  # Forecast lead times (keep moderate)
+  steps_hours: [0, 6, 12, 18, 24, 36, 48]
+
+  # Surface variables (core)
+  sfc_params:
+    - 2t        # 2 m temperature (core)
+    - msl       # mean sea level pressure (optional)
+    - 10u       # optional
+    - 10v       # optional
+
+  # Pressure-level variables (strictly limited)
+  pl_params:
+    - t
+  pl_levels:
+    - 500       # ONLY 500 hPa
+
+  levtypes:
+    - sfc
+    - pl
+
+  # Region handling
+  region: global        # download global (use N,W,S,E to subset)
+  #crop_in_analysis: true  # subset to Europe later (not used in download)
+         # AIFS subsetting via area not guaranteed; crop later
+
+
+  out_dir: data/aifs/raw
+
+  # Robustness
+  overwrite: false
+  max_retries: 5
+  backoff_seconds: 10

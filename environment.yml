@@ -9,6 +9,7 @@ dependencies:
   # Numerical + data handling
   - numpy
   - pandas
+  - pyyaml
   - scipy
   - xarray
   - netcdf4
