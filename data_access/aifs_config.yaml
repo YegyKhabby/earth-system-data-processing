@@ -11,7 +11,7 @@ aifs:
     include_today: true
 
   # Forecast lead times (keep moderate)
-  steps_hours: [0, 6, 12, 18, 24, 36, 48]
+  steps_hours: [6, 12, 18, 24, 36, 48]
 
   # Surface variables (core)
   sfc_params:

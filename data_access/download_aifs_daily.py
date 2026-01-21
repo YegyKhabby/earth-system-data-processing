@@ -151,6 +151,9 @@ def download_aifs_data(cfg, dry_run: bool = False, overwrite: bool = False, retr
     today_str = datetime.now().strftime("%Y-%m-%d")
     
     # Download loop
+    # Use configured source name as-is (e.g., ecmwf-open-data)
+    source_name = cfg.get("source")
+
     for date in cfg["dates"]:
         date_obj = datetime.strptime(date, "%Y-%m-%d")
         date_dir = OUT / date_obj.strftime("%Y/%m/%d")
@@ -192,7 +195,7 @@ def download_aifs_data(cfg, dry_run: bool = False, overwrite: bool = False, retr
 
                             def _request():
                                 return earthkit.data.from_source(
-                                    cfg["source"],
+                                    source_name,
                                     model=cfg["model"],
                                     stream="oper",
                                     type="fc",
@@ -280,7 +283,6 @@ def download_aifs_data(cfg, dry_run: bool = False, overwrite: bool = False, retr
                             logger.info(f"Requesting PL {level}hPa {date} {time_hour:02d}Z step {step:3d}h -> {target_file_pl.name}")
 
                             pl_kwargs = dict(
-                                source=cfg["source"],
                                 model=cfg["model"],
                                 stream="oper",
                                 type="fc",
@@ -291,7 +293,7 @@ def download_aifs_data(cfg, dry_run: bool = False, overwrite: bool = False, retr
                                 param=cfg["pl_params"],
                                 target=str(target_file_pl),
                             )
-                            pl_kwargs["level"] = level
+                            pl_kwargs["levelist"] = level
                             if cfg.get("area"):
                                 pl_kwargs["area"] = cfg["area"]
 
@@ -299,7 +301,11 @@ def download_aifs_data(cfg, dry_run: bool = False, overwrite: bool = False, retr
                                 logger.info("Dry run: skipping PL request")
                                 continue
 
-                            ds_pl = request_with_retries(lambda: earthkit.data.from_source(**pl_kwargs), retries=retries, sleep_s=sleep_s)
+                            ds_pl = request_with_retries(
+                                lambda: earthkit.data.from_source(source_name, **pl_kwargs),
+                                retries=retries,
+                                sleep_s=sleep_s
+                            )
                             npl = len(ds_pl)
                             if npl == 0:
                                 logger.warning(f"No PL data returned for {level}hPa {date} step {step}h")
@@ -361,15 +367,15 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default=str(Path(__file__).parent / "aifs_config.yaml"), help="Path to YAML config.")
     parser.add_argument("--start-date", type=str, help="Start date (YYYY-MM-DD).")
     parser.add_argument("--end-date", type=str, help="End date (YYYY-MM-DD).")
-    parser.add_argument("--days", type=int, default=3, help="Number of recent days to download (default: 3).")
+    parser.add_argument("--days", type=int, default=None, help="Number of recent days to download (default from config).")
     parser.add_argument("--include-today", action="store_true", help="Include today (may be incomplete).")
-    parser.add_argument("--time", type=int, default=12, help="Run time (UTC hour).")
-    parser.add_argument("--steps", type=str, default="0,6,12,18", help="Comma-separated steps in hours.")
-    parser.add_argument("--params", type=str, default="2t,10u,10v,msl", help="Comma-separated surface params.")
-    parser.add_argument("--pl-params", type=str, default="t", help="Comma-separated pressure-level params.")
-    parser.add_argument("--pl-levels", type=str, default="500", help="Comma-separated pressure levels (hPa). Use empty to disable.")
+    parser.add_argument("--time", type=int, default=None, help="Run time (UTC hour).")
+    parser.add_argument("--steps", type=str, default=None, help="Comma-separated steps in hours.")
+    parser.add_argument("--params", type=str, default=None, help="Comma-separated surface params.")
+    parser.add_argument("--pl-params", type=str, default=None, help="Comma-separated pressure-level params.")
+    parser.add_argument("--pl-levels", type=str, default=None, help="Comma-separated pressure levels (hPa). Use empty to disable.")
     parser.add_argument("--area", type=str, help="Spatial subset as N,W,S,E (e.g., 55,5,47,15).")
-    parser.add_argument("--out-dir", type=str, default=str(Path(__file__).parent / "data" / "aifs"), help="Output directory.")
+    parser.add_argument("--out-dir", type=str, default=None, help="Output directory.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing files.")
     parser.add_argument("--dry-run", action="store_true", help="Print requests without downloading.")
     parser.add_argument("--retries", type=int, default=2, help="Retry count on failure.")
@@ -384,29 +390,26 @@ if __name__ == "__main__":
     episode_cfg = cfg_aifs.get("episode", {}) if isinstance(cfg_aifs, dict) else {}
     if args.start_date and args.end_date:
         episode_cfg = {"start_date": args.start_date, "end_date": args.end_date}
-    elif args.days or args.include_today:
-        episode_cfg = {"days": args.days, "include_today": args.include_today}
+    elif args.days is not None or args.include_today:
+        episode_cfg = {
+            "days": args.days if args.days is not None else episode_cfg.get("days", 3),
+            "include_today": args.include_today,
+        }
 
     dates = build_dates_from_episode(episode_cfg)
 
-    steps = [int(s.strip()) for s in args.steps.split(",") if s.strip()]
-    params = [p.strip() for p in args.params.split(",") if p.strip()]
-    pl_params = [p.strip() for p in args.pl_params.split(",") if p.strip()]
-    pl_levels = [int(p.strip()) for p in args.pl_levels.split(",") if p.strip()] if args.pl_levels.strip() else []
+    steps = [int(s.strip()) for s in args.steps.split(",") if s.strip()] if args.steps else list(cfg_aifs.get("steps_hours", [0, 6, 12, 18]))
+    params = [p.strip() for p in args.params.split(",") if p.strip()] if args.params else list(cfg_aifs.get("sfc_params", ["2t", "10u", "10v", "msl"]))
+    pl_params = [p.strip() for p in args.pl_params.split(",") if p.strip()] if args.pl_params else list(cfg_aifs.get("pl_params", ["t"]))
+    if args.pl_levels is not None:
+        pl_levels = [int(p.strip()) for p in args.pl_levels.split(",") if p.strip()]
+    else:
+        pl_levels = list(cfg_aifs.get("pl_levels", [500]))
 
-    # Read from config if present and CLI left defaults
-    if cfg_aifs.get("steps_hours") and args.steps == "0,6,12,18":
-        steps = list(cfg_aifs["steps_hours"])
-    if cfg_aifs.get("sfc_params") and args.params == "2t,10u,10v,msl":
-        params = list(cfg_aifs["sfc_params"])
-    if cfg_aifs.get("pl_params") and args.pl_params == "t":
-        pl_params = list(cfg_aifs["pl_params"])
-    if cfg_aifs.get("pl_levels") and args.pl_levels == "500":
-        pl_levels = list(cfg_aifs["pl_levels"])
-
-    times = [args.time]
-    if cfg_aifs.get("init_hours_utc") and args.time == 12:
-        times = list(cfg_aifs["init_hours_utc"])
+    if args.time is not None:
+        times = [args.time]
+    else:
+        times = list(cfg_aifs.get("init_hours_utc", [12]))
 
     levtypes = cfg_aifs.get("levtypes", ["sfc", "pl"])
 
@@ -421,7 +424,7 @@ if __name__ == "__main__":
         "pl_params": pl_params,
         "pl_levels": pl_levels,
         "levtypes": levtypes,
-        "out_dir": Path(cfg_aifs.get("out_dir", args.out_dir)),
+        "out_dir": Path(args.out_dir) if args.out_dir else Path(cfg_aifs.get("out_dir", Path(__file__).parent / "data" / "aifs")),
     }
     region = cfg_aifs.get("region")
     if region and region != "global" and not args.area:
