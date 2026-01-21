@@ -49,16 +49,17 @@ def get_last_3_days():
     return dates_list
 
 
-def create_filename(model, date, time_hour, levtype, step):
+def create_filename(model, date, time_hour, levtype, step, level=None):
     """Generate standardized GRIB2 filename"""
     clean_date = date.replace("-", "")
+    # Include pressure level in filename for pressure-level products
     filename = (
         f"{model}_"
         f"{clean_date}_"
         f"{time_hour:02d}_"
         f"{levtype}_"
-        f"step{step:03d}_"
-        f"0p25.grib2"
+        + (f"{level}hPa_" if level is not None else "")
+        + f"step{step:03d}_0p25.grib2"
     )
     return filename
 
@@ -75,9 +76,11 @@ def download_aifs_data():
         "model": "aifs-single",
         "dates": get_last_3_days(),
         "time": 12,
-        "steps": [6, 12, 24],
+        "steps": [0, 6, 12, 18],
         "levtype": "sfc",
         "params": ["2t", "10u", "10v", "msl"],
+        "pl_params": ["t"],
+        "pl_levels": [500],
         "out_dir": Path(__file__).parent / "data" / "aifs",
     }
     
@@ -100,7 +103,7 @@ def download_aifs_data():
             )
             
             try:
-                logger.info(f"Requesting {date} step {step:3d}h → {target_file.name}")
+                logger.info(f"Requesting {date} step {step:3d}h -> {target_file.name}")
                 
                 # Request data from ECMWF Open Data
                 ds = earthkit.data.from_source(
@@ -127,12 +130,53 @@ def download_aifs_data():
                 ds.save(str(target_file))
                 file_size = target_file.stat().st_size
                 total_size += file_size
-                logger.info(f"✓ Saved: {target_file.name} ({file_size / (1024*1024):.2f} MB)")
+                logger.info(f"Saved: {target_file.name} ({file_size / (1024*1024):.2f} MB)")
                 success_count += 1
                 
             except Exception as e:
-                logger.error(f"✗ Failed to download {date} step {step}h: {str(e)}")
+                logger.error(f"Failed to download {date} step {step}h: {str(e)}")
                 error_count += 1
+            # --- Pressure-level products (temperature at specified levels) ---
+            for level in CFG.get("pl_levels", []):
+                target_file_pl = OUT / create_filename(
+                    CFG["model"], date, CFG["time"], "pl", step, level=level
+                )
+                try:
+                    logger.info(f"Requesting PL {level}hPa {date} step {step:3d}h -> {target_file_pl.name}")
+
+                    # Build kwargs for pressure-level request (include level)
+                    pl_kwargs = dict(
+                        source=CFG["source"],
+                        model=CFG["model"],
+                        stream="oper",
+                        type="fc",
+                        date=date,
+                        time=CFG["time"],
+                        step=step,
+                        levtype="pl",
+                        param=CFG["pl_params"],
+                        target=str(target_file_pl),
+                    )
+
+                    # Add numeric level argument if supported by earthkit
+                    pl_kwargs["level"] = level
+
+                    ds_pl = earthkit.data.from_source(**pl_kwargs)
+
+                    npl = len(ds_pl)
+                    if npl == 0:
+                        logger.warning(f"No PL data returned for {level}hPa {date} step {step}h")
+                        error_count += 1
+                    else:
+                        ds_pl.save(str(target_file_pl))
+                        file_size = target_file_pl.stat().st_size
+                        total_size += file_size
+                        logger.info(f"Saved: {target_file_pl.name} ({file_size / (1024*1024):.2f} MB)")
+                        success_count += 1
+
+                except Exception as e:
+                    logger.error(f"Failed to download PL {level}hPa {date} step {step}h: {str(e)}")
+                    error_count += 1
     
     # Summary
     elapsed_time = time.time() - start_time
