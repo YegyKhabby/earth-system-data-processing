@@ -16,6 +16,7 @@ from typing import Tuple
 
 import numpy as np
 import tempfile
+import sys
 
 try:
     import xarray as xr  # type: ignore
@@ -119,9 +120,16 @@ def compare_grids(
     lon_normalize: str = "none",
     rtol: float = 1e-6,
     atol: float = 1e-6,
+    align_after_roll: bool = False,
 ) -> dict:
     ds_aifs = _open_aifs_grib(aifs_path, param=param)
     ds_era5 = _open_era5_netcdf(era5_path)
+
+    if align_after_roll:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from aifs_era5_rmse import align_aifs_lon_to_era5  # type: ignore
+
+        ds_aifs = align_aifs_lon_to_era5(ds_aifs, ds_era5)
 
     lat_aifs, lon_aifs = _extract_lat_lon(ds_aifs)
     lat_era5, lon_era5 = _extract_lat_lon(ds_era5)
@@ -177,6 +185,7 @@ def main() -> int:
     parser.add_argument("--rtol", type=float, default=1e-6, help="Relative tolerance for coord comparison")
     parser.add_argument("--atol", type=float, default=1e-6, help="Absolute tolerance for coord comparison")
     parser.add_argument("--print-coords", action="store_true", help="Print coordinate details")
+    parser.add_argument("--after-roll", action="store_true", help="Align AIFS longitude ordering before comparison")
 
     args = parser.parse_args()
 
@@ -187,6 +196,7 @@ def main() -> int:
         lon_normalize=args.lon_normalize,
         rtol=args.rtol,
         atol=args.atol,
+        align_after_roll=args.after_roll,
     )
 
     print("Grid comparison:")

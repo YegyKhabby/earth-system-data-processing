@@ -168,7 +168,7 @@ def _get_lat_lon_names(ds: "xr.Dataset") -> tuple[str, str]:
             return lat_name, lon_name
     raise RuntimeError("Could not find latitude/longitude coordinates in dataset")
 
-
+# normalize_lon is a general safety helper as we already know how lon of ERA5 and AIFS look like
 def _normalize_lon(lon: np.ndarray, mode: str = "to_360") -> np.ndarray:
     if mode == "none":
         return lon
@@ -178,7 +178,8 @@ def _normalize_lon(lon: np.ndarray, mode: str = "to_360") -> np.ndarray:
         return (np.mod(lon + 180.0, 360.0) - 180.0)
     raise ValueError(f"Unknown longitude normalization mode: {mode}")
 
-
+#It looks for a single large negative jump in a 1-D longitude array 
+# and returns the index where longitude wraps back to the start.
 def _find_wrap_index(lon: np.ndarray) -> int | None:
     if lon.ndim != 1 or lon.size < 2:
         return None
@@ -204,15 +205,10 @@ def align_aifs_lon_to_era5(aifs_ds: "xr.Dataset", era5_ds: "xr.Dataset") -> "xr.
     if lon_a_vals.shape == lon_e_vals.shape and np.allclose(lon_a_vals, lon_e_vals, atol=1e-6, rtol=0.0):
         return aifs_ds
 
-    # Detect wrap and compute roll offset to match ERA5 start lon
+    # Detect wrap and roll to make AIFS longitude monotonic
     wrap_idx = _find_wrap_index(lon_a_vals)
-    if wrap_idx is not None:
-        lon_a_vals = np.concatenate([lon_a_vals[wrap_idx:], lon_a_vals[:wrap_idx]])
+    if wrap_idx is None:
+        return aifs_ds
 
-    # Find the index in AIFS lon that best matches ERA5[0]
-    target0 = lon_e_vals[0]
-    roll_idx = int(np.argmin(np.abs(lon_a_vals - target0)))
-
-    # Roll dataset to match ERA5 ordering
-    aligned = aifs_ds.roll({lon_a: -roll_idx}, roll_coords=True)
+    aligned = aifs_ds.roll({lon_a: -wrap_idx}, roll_coords=True)
     return aligned
