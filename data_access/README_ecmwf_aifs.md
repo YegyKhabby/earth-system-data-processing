@@ -112,6 +112,21 @@ The notebook includes a visualization component that generates a global 2m tempe
 - Forecast cycle timing matters: Downloading "today's" data before all 4 daily cycles complete (00, 06, 12, 18 UTC) results in incomplete datasets
 - ECMWF provides extensive learning resources: webinars on data access methods, example notebooks on [GitHub](https://github.com/ecmwf/notebook-examples/tree/master/opencharts), and detailed model documentation significantly reduce implementation barriers for students and researchers
 
+## Grid Alignment (AIFS vs ERA5)
+
+Both AIFS and ERA5 are on ~0.25° regular lat/lon grids, but the longitude ordering can differ. In practice:
+- **ERA5** uses longitudes that start at 0° and increase to 359.75°.
+- **AIFS (Open Data)** may start at 180° and wrap to 0°, even though the resolution and grid size match.
+
+This means a direct point-wise subtraction can fail unless the longitude ordering is aligned.
+
+**How it is handled in this project:**
+- We verify grid shapes and coordinate values using `data_access/check_aifs_era5_grid.py`.
+- If longitudes are the same values but wrapped, we **roll** AIFS longitude ordering to match ERA5 before RMSE (no interpolation).
+- If the grids truly differ (different spacing or values), regridding is required.
+
+**Practical tip:** Use the `--print-coords` option in `check_aifs_era5_grid.py` to inspect numeric lat/lon values directly.
+
 
 ## Scaling Considerations
 
