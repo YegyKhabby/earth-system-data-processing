@@ -262,3 +262,5 @@ data_access/logs/
 # Zarr stores and results (large data - do NOT commit)
 zarr_data/
 zarr_data/*
+
+data/static/koppen*.tif

@@ -52,8 +52,8 @@ ERA5_TASKS = [
     },
 ]
 
-DEFAULT_START_DATE = datetime(2024, 12, 1)
-DEFAULT_END_DATE = datetime(2024, 12, 5)
+DEFAULT_START_DATE = datetime(2026, 1, 19)
+DEFAULT_END_DATE = datetime(2026, 1, 20)
 
 # Runtime-selected dirs (initialized below)
 DATA_DIR = DATA_DIR_REAL
@@ -148,6 +148,14 @@ def _build_output_filename(task: dict, date: datetime, output_format: str) -> st
     return f"era5_{variable}_{level_tag}_{date_str}.{ext}"
 
 
+def _task_date_for(task: dict, date: datetime) -> datetime:
+    if task.get("static"):
+        static_date = task.get("static_date")
+        if static_date:
+            return datetime.strptime(static_date, "%Y-%m-%d")
+    return date
+
+
 def download_era5_daily(
     date: datetime,
     task: dict,
@@ -166,7 +174,8 @@ def download_era5_daily(
     output_format = ERA5_COMMON["format"]
     grid = ERA5_COMMON["grid"]
 
-    output_path = output_dir / _build_output_filename(task, date, output_format)
+    task_date = _task_date_for(task, date)
+    output_path = output_dir / _build_output_filename(task, task_date, output_format)
 
     if output_path.exists():
         if _is_valid_era5_file(output_path):
@@ -194,7 +203,7 @@ def download_era5_daily(
         "product_type": "reanalysis",
         "format": output_format,
         "variable": variable,
-        "date": date.strftime("%Y-%m-%d"),
+        "date": task_date.strftime("%Y-%m-%d"),
         "time": times,
     }
     if not task.get("single_level", False):
@@ -203,7 +212,7 @@ def download_era5_daily(
         request["grid"] = grid
 
     try:
-        logger.info(f"Downloading {date.strftime('%Y-%m-%d')}: {variable} product={product_name}")
+        logger.info(f"Downloading {task_date.strftime('%Y-%m-%d')}: {variable} product={product_name}")
         client.retrieve(product_name, request, str(output_path))
 
         if not _is_valid_era5_file(output_path):
@@ -263,8 +272,9 @@ def check_day_completeness(date: datetime, task: dict, archive_dir: Path | None 
     if archive_dir is None:
         archive_dir = ARCHIVE_DIR_REAL
 
-    yyyy = date.strftime("%Y")
-    mm = date.strftime("%m")
+    task_date = _task_date_for(task, date)
+    yyyy = task_date.strftime("%Y")
+    mm = task_date.strftime("%m")
 
     archive_date_folder = archive_dir / yyyy / mm
     ext = "nc" if ERA5_COMMON["format"] == "netcdf" else "grib"
@@ -272,7 +282,7 @@ def check_day_completeness(date: datetime, task: dict, archive_dir: Path | None 
     if not archive_date_folder.exists():
         return {"complete": False, "archive_path": archive_date_folder}
 
-    archived_file = archive_date_folder / _build_output_filename(task, date, ERA5_COMMON["format"])
+    archived_file = archive_date_folder / _build_output_filename(task, task_date, ERA5_COMMON["format"])
 
     return {"complete": archived_file.exists(), "archive_path": archive_date_folder}
 
@@ -285,11 +295,12 @@ def should_skip_date(date: datetime, task: dict, mock: bool | None = None) -> bo
     archive_dir = ARCHIVE_DIR_MOCK if mock else ARCHIVE_DIR_REAL
     completeness = check_day_completeness(date, task, archive_dir)
 
+    task_date = _task_date_for(task, date)
     if completeness["complete"]:
-        logger.info(f"Skipping {date.strftime('%Y-%m-%d')}: already in archive ({task['variable']})")
+        logger.info(f"Skipping {task_date.strftime('%Y-%m-%d')}: already in archive ({task['variable']})")
         return True
 
-    logger.info(f"Downloading {date.strftime('%Y-%m-%d')}: not yet in archive ({task['variable']})")
+    logger.info(f"Downloading {task_date.strftime('%Y-%m-%d')}: not yet in archive ({task['variable']})")
     return False
 
 
@@ -330,9 +341,14 @@ def process_date_range(
     current = start_date
     results = {"downloaded": 0, "skipped": 0, "failed": 0}
     manifest_rows: list[dict] = []
+    static_done: set[str] = set()
 
     while current <= end_date:
         for task in tasks:
+            if task.get("static"):
+                task_key = task.get("name") or task.get("variable", "static")
+                if task_key in static_done:
+                    continue
             if skip_if_complete and should_skip_date(current, task, mock=mock):
                 results["skipped"] += 1
                 status = "skipped"
@@ -348,16 +364,18 @@ def process_date_range(
 
             manifest_rows.append(
                 {
-                    "date": current.strftime("%Y-%m-%d"),
+                    "date": _task_date_for(task, current).strftime("%Y-%m-%d"),
                     "variable": task["variable"],
                     "single_level": task.get("single_level", False),
                     "pressure_levels": ",".join(str(p) for p in task.get("pressure_levels", [])),
                     "format": ERA5_COMMON["format"],
                     "status": status,
-                    "file": archived_path.name if archived_path else _build_output_filename(task, current, ERA5_COMMON["format"]),
+                    "file": archived_path.name if archived_path else _build_output_filename(task, _task_date_for(task, current), ERA5_COMMON["format"]),
                     "archive_path": str(archived_path) if archived_path else "",
                 }
             )
+            if task.get("static"):
+                static_done.add(task_key)
 
         current += timedelta(days=1)
 
@@ -471,6 +489,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-2m", action="store_true", help="Disable 2m temperature (single-level) task")
     parser.add_argument("--pressure-variable", default="temperature", help="Pressure-level variable name")
     parser.add_argument("--single-variable", default="2m_temperature", help="Single-level variable name")
+    parser.add_argument("--include-lsm", action="store_true", help="Include land-sea mask (static)")
+    parser.add_argument("--lsm-date", default="1979-01-01", help="Date used to store LSM (YYYY-MM-DD)")
 
     return parser
 
@@ -502,6 +522,17 @@ def _apply_cli_config(args: argparse.Namespace) -> None:
             "single_level": False,
         }
     )
+    if args.include_lsm:
+        tasks.append(
+            {
+                "name": "lsm",
+                "variable": "land_sea_mask",
+                "pressure_levels": [],
+                "single_level": True,
+                "static": True,
+                "static_date": args.lsm_date,
+            }
+        )
 
     global ERA5_TASKS
     ERA5_TASKS = tasks

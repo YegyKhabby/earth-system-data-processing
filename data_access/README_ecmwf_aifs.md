@@ -5,6 +5,14 @@
 **Instructor**: Martin Schultz, Jülich Supercomputing Centre & University of Cologne  
 **Tools**: Developed with GitHub Copilot
 
+
+
+for now:
+https://data-staging.naturalcapitalproject.org/dataset/sts-b04939b0df93eb3f4305a065933c66122a0edc6fa425b157b99aa7b4b4446d20
+1)koppen link 
+Global Koppen-Geiger Climate Zone Classification Map for 1991-2020 at 1km resolution. The source data was downloaded and turned into a Cloud-Optimized GeoTIFF with internal overviews by members of the NatCap Team.
+2)had some functions to check actual names of variables in both files and short names
+3) converted kelvin to celsuis
 ## Overview
 
 This project demonstrates programmatic access to ECMWF's Artificial Intelligence/Integrated Forecasting System (AIFS) Single deterministic forecast data via the ECMWF Open Data API. It includes both a **notebook workflow** and a **scripted downloader**.
@@ -121,11 +129,11 @@ Both AIFS and ERA5 are on ~0.25° regular lat/lon grids, but the longitude order
 This means a direct point-wise subtraction can fail unless the longitude ordering is aligned.
 
 **How it is handled in this project:**
-- We verify grid shapes and coordinate values using `data_access/check_aifs_era5_grid.py`.
+- We verify grid shapes and coordinate values using `data_access/scripts/verify/check_aifs_era5_grid.py`.
 - If longitudes are the same values but wrapped, we **roll** AIFS longitude ordering to match ERA5 before RMSE (no interpolation).
 - If the grids truly differ (different spacing or values), regridding is required.
 
-**Practical tip:** Use the `--print-coords` option in `check_aifs_era5_grid.py` to inspect numeric lat/lon values directly.
+**Practical tip:** Use the `--print-coords` option in `data_access/scripts/verify/check_aifs_era5_grid.py` to inspect numeric lat/lon values directly.
 
 
 ## Scaling Considerations
