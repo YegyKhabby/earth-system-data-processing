@@ -1,0 +1,980 @@
+from pathlib import Path
+import sys
+import pandas as pd
+import numpy as np
+import xarray as xr
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import rasterio
+from rasterio.transform import rowcol
+from matplotlib.colors import ListedColormap
+
+# Paths (anchor to this script, not CWD)
+SCRIPTS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPTS_DIR.parent.parent
+AIFS_ROOT = REPO_ROOT / 'data' / 'aifs' / 'raw'
+ERA5_ARCHIVE = REPO_ROOT / 'data' / 'era5' / 'archive' / 'real'
+RMSE_OUT = REPO_ROOT / 'data' / 'rmse_outputs'
+KOPPEN_RASTER = REPO_ROOT / 'data' / 'static' / 'koppen_geiger_0p1.tif'
+# Fallback to available Köppen raster in repo
+_KOPPEN_ALT = REPO_ROOT / 'data' / 'static' / 'koppen_geiger_climatezones_1991_2020_1km.tif'
+if not KOPPEN_RASTER.exists() and _KOPPEN_ALT.exists():
+    KOPPEN_RASTER = _KOPPEN_ALT
+OROG_RASTER = REPO_ROOT / 'data' / 'static' / 'era5_orography.nc'
+
+# Create output directories
+RMSE_OUT.mkdir(parents=True, exist_ok=True)
+INDEX_DIR = RMSE_OUT / 'cfgrib_index'
+INDEX_DIR.mkdir(parents=True, exist_ok=True)
+
+# Clean stale RMSE outputs from previous runs
+def _remove_if_exists(path: Path) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+            print(f"  Removed old file: {path.name}")
+    except Exception as e:
+        print(f"  Warning: could not remove {path.name}: {e}")
+
+print("Cleaning old RMSE outputs...\n")
+for var in ['2t', 't500']:
+    for suffix in ['by_step', 'by_day', 'by_hour']:
+        _remove_if_exists(RMSE_OUT / f'rmse_{suffix}_{var}.nc')
+        _remove_if_exists(RMSE_OUT / f'rmse_{suffix}_{var}.csv')
+
+# Constants
+VARIABLES = ['2t', 't500']
+EUROPE_EXTENT = (-5, 25, 43, 58)  # (lon_min, lon_max, lat_min, lat_max)
+
+# Plot configuration (user-tunable)
+PLOT_CFG = {
+    # RMSE dots
+    "rmse_cmap": "YlOrRd",       # e.g., "cividis", "viridis", "YlOrRd"
+    "rmse_size": 45,
+    "rmse_edgecolor": "black",
+    "rmse_alpha": 0.85,
+    # Value range: set either absolute (vmin/vmax) or percentiles
+    "rmse_vmin": None,            # absolute vmin (float) or None
+    "rmse_vmax": None,            # absolute vmax (float) or None
+    "rmse_pct": (5, 95),          # percentile range if vmin/vmax are None
+    # Normalization to improve low-value contrast: "linear" or "power"
+    "rmse_norm": "power",
+    "rmse_gamma": 0.6,
+    # Backgrounds
+    "koppen_alpha": 0.6,
+    "orog_alpha": 0.35,
+    # Layout
+    "legend_cols": 3,
+    # Figure 2 config (Mean RMSE vs Lead Time)
+    "skill_cmap": "viridis",
+    "skill_vmin": None,           # absolute vmin or None
+    "skill_vmax": None,           # absolute vmax or None
+    "skill_pct": (5, 95),         # percentile range if vmin/vmax are None
+}
+
+print(f"✓ Paths configured:")
+print(f"  REPO_ROOT: {REPO_ROOT}")
+print(f"  AIFS_ROOT: {AIFS_ROOT}")
+print(f"  ERA5_ARCHIVE: {ERA5_ARCHIVE}")
+print(f"  RMSE_OUT: {RMSE_OUT}")
+# Import RMSE pipeline functions
+
+mods_to_remove = [m for m in sys.modules.keys() if 'aifs_era5_rmse' in m or 'compute_rmse_outputs' in m]
+for m in mods_to_remove:
+    del sys.modules[m]
+
+# Add SCRIPTS_DIR to path
+if str(SCRIPTS_DIR) in sys.path:
+    sys.path.remove(str(SCRIPTS_DIR))
+sys.path.insert(0, str(SCRIPTS_DIR))
+
+from aifs_era5_rmse import (
+    index_aifs_files,
+    index_era5_archive,
+    filter_era5_index_by_product,
+    filter_aifs_index_by_levtype,
+    pair_aifs_with_era5_for_variable,
+    compute_pair_rmse,
+    EUROPE_BBOX,
+    VARIABLE_CONFIG,
+)
+
+from compute_rmse_outputs import compute_rmse_outputs
+# Run download scripts (idempotent)
+import runpy
+
+print("Running data access scripts...\n")
+for script in [
+    SCRIPTS_DIR / 'download_aifs_daily.py',
+    SCRIPTS_DIR / 'era5_download_only.py',
+]:
+    try:
+        print(f"  Running {script.name}...")
+        runpy.run_path(str(script), run_name='__main__')
+    except SystemExit as e:
+        print(f"    (exited with code {e.code})")
+    except Exception as e:
+        print(f"    Error: {e}")
+
+print("\n✓ Download scripts completed")
+print("Indexing AIFS and ERA5 files...\n")
+
+# Index AIFS
+aifs_index = index_aifs_files(AIFS_ROOT)
+print(f"AIFS Index:")
+print(f"  Total files: {len(aifs_index)}")
+print(f"  Date range: {aifs_index['valid_dt'].min()} to {aifs_index['valid_dt'].max()}")
+
+# Extract lead times from filenames (e.g., step006, step012)
+if 'path' in aifs_index.columns:
+    steps = set()
+    for fpath in aifs_index['path']:
+        if 'step' in fpath:
+            import re
+            match = re.search(r'step(\d+)', fpath)
+            if match:
+                steps.add(int(match.group(1)))
+    if steps:
+        print(f"  Lead times (hours): {sorted(steps)}")
+
+# Index ERA5
+era5_all = index_era5_archive(ERA5_ARCHIVE, variable=None)
+print(f"\nERA5 Index:")
+print(f"  Total files: {len(era5_all)}")
+if len(era5_all) > 0:
+    print(f"  Date range: {era5_all['date'].min()} to {era5_all['date'].max()}")
+    print(f"  Product tags: {list(era5_all['product_tag'].unique())}")
+    for tag in sorted(era5_all['product_tag'].unique()):
+        subset = era5_all[era5_all['product_tag'] == tag]
+        print(f"    {tag}: {len(subset)} files")
+        print("Pairing AIFS with ERA5...\n")
+
+pairs_dict = {}
+
+for var in VARIABLES:
+    print(f"{var}:")
+    
+    # Get config
+    config = VARIABLE_CONFIG[var]
+    aifs_levtype = "sfc" if config["aifs"]["filter_by_keys"]["typeOfLevel"] == "heightAboveGround" else "pl"
+    
+    # Determine ERA5 product tag
+    if var == "2t":
+        era5_tag = "t2m"
+    elif var == "t500":
+        era5_tag = "t_pl500"
+    else:
+        era5_tag = config["era5"]["var"]
+    
+    # Filter indices
+    aifs_filt = filter_aifs_index_by_levtype(aifs_index, aifs_levtype)
+    era5_filt = filter_era5_index_by_product(era5_all, era5_tag)
+    
+    print(f"  AIFS {aifs_levtype}: {len(aifs_filt)} files")
+    print(f"  ERA5 {era5_tag}: {len(era5_filt)} files")
+    
+    if len(era5_filt) == 0:
+        print(f"  ⚠️  No ERA5 files for {var}, skipping")
+        continue
+    
+    # Pair
+    pairs = pair_aifs_with_era5_for_variable(aifs_filt, era5_filt, var)
+    pairs_dict[var] = pairs
+    
+    # Status breakdown
+    status_counts = pairs['status'].value_counts().to_dict()
+    ok_pairs = len(pairs[pairs['status'] == 'ok'])
+    print(f"  Total pairs: {len(pairs)}")
+    print(f"  OK pairs: {ok_pairs}")
+    print(f"  Status breakdown: {status_counts}")
+    
+    # Save manifest
+    pairs.to_csv(RMSE_OUT / f'pairs_manifest_{var}.csv', index=False)
+    print(f"  ✓ Saved pairs_manifest_{var}.csv\n")
+    # Compute spatial and temporal aggregations
+print("Computing RMSE outputs (spatial maps + aggregations)...\n")
+
+pairs_2t = pairs_dict.get('2t')
+pairs_t500 = pairs_dict.get('t500')
+
+compute_rmse_outputs(
+    pairs_2t=pairs_2t,
+    pairs_t500=pairs_t500,
+    compute_rmse_for_pairs_func=compute_pair_rmse,
+    index_dir=INDEX_DIR,
+    output_dir=RMSE_OUT,
+    bbox=EUROPE_BBOX,
+    variables=VARIABLES,
+)
+
+print("\n✓ RMSE outputs computation completed")
+print("Loading and validating RMSE outputs...\n")
+
+# Data loaders (eager-load then close to avoid netCDF handle issues)
+def _open_rmse(path: Path) -> xr.Dataset:
+    ds = xr.open_dataset(path)
+    ds.load()
+    ds.close()
+    return ds
+
+def load_rmse_by_step(var):
+    path = RMSE_OUT / f'rmse_by_step_{var}.nc'
+    return _open_rmse(path)
+
+def load_rmse_by_day(var):
+    path = RMSE_OUT / f'rmse_by_day_{var}.nc'
+    return _open_rmse(path)
+
+def load_rmse_by_hour(var):
+    path = RMSE_OUT / f'rmse_by_hour_{var}.nc'
+    return _open_rmse(path)
+
+# Validate outputs for each variable
+outputs_summary = {}
+
+for var in VARIABLES:
+    print(f"{var}:")
+    results = {}
+    
+    for agg_type, loader in [
+        ('by_step', load_rmse_by_step),
+        ('by_day', load_rmse_by_day),
+        ('by_hour', load_rmse_by_hour),
+    ]:
+        try:
+            ds = loader(var)
+            results[agg_type] = ds
+            
+            rmse = ds['rmse']
+            dims_str = f"{list(rmse.dims)}"
+            shape_str = f"{rmse.shape}"
+            n_pairs = ds.attrs.get('n_pairs', 'N/A')
+            
+            print(f"  {agg_type}: dims={dims_str}, shape={shape_str}, n_pairs={n_pairs}")
+        except FileNotFoundError:
+            print(f"  {agg_type}: ⚠️  File not found")
+        except Exception as e:
+            print(f"  {agg_type}: ✗ Error - {e}")
+    
+    outputs_summary[var] = results
+    print()
+    # Detailed sanity check
+print("Detailed output validation:\n")
+
+for var in VARIABLES:
+    print(f"\n{var}:")
+    
+    try:
+        ds_step = load_rmse_by_step(var)
+        rmse = ds_step['rmse']
+        
+        print(f"  RMSE by step:")
+        print(f"    Min: {float(rmse.min()):.4f} K")
+        print(f"    Max: {float(rmse.max()):.4f} K")
+        print(f"    Mean: {float(rmse.mean()):.4f} K")
+        print(f"    NaN fraction: {float(np.isnan(rmse).sum()) / rmse.size:.1%}")
+        print(f"    Steps available: {list(ds_step.coords['step'].values)}")
+    except Exception as e:
+        print(f"  Error: {e}")
+# Helper plotting functions
+
+def setup_map_ax(title="", extent=EUROPE_EXTENT):
+    """Create cartographic axes over Europe."""
+    fig = plt.figure(figsize=(12, 8))
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    ax.set_extent(extent, crs=ccrs.PlateCarree())
+    ax.coastlines(linewidth=0.5)
+    ax.add_feature(ccrs.cartopy.feature.BORDERS, linewidth=0.5)
+    
+    gl = ax.gridlines(draw_labels=True, linestyle='--', linewidth=0.3, alpha=0.5)
+    gl.top_labels = False
+    gl.right_labels = False
+    
+    if title:
+        ax.set_title(title, fontsize=14, fontweight='bold')
+    
+    return fig, ax
+
+def add_koppen_background(ax, koppen_path):
+    """Overlay Köppen–Geiger climate zones (skipped if file unavailable)."""
+    if not koppen_path.exists():
+        return
+    
+    try:
+        src = rasterio.open(str(koppen_path))
+        data = src.read(1)
+        transform = src.transform
+        src.close()
+        
+        koppen_lookup = {
+            1: 'Af', 2: 'Am', 3: 'Aw', 4: 'BWh', 5: 'BWk', 6: 'BSh', 7: 'BSk',
+            8: 'Csa', 9: 'Csb', 10: 'Csc', 11: 'Cwa', 12: 'Cwb', 13: 'Cwc',
+            14: 'Cfa', 15: 'Cfb', 16: 'Cfc', 17: 'Dsa', 18: 'Dsb', 19: 'Dsc', 20: 'Dsd',
+            21: 'Dwa', 22: 'Dwb', 23: 'Dwc', 24: 'Dwd', 25: 'Dfa', 26: 'Dfb',
+            27: 'Dfc', 28: 'Dfd', 29: 'ET', 30: 'EF'
+        }
+        
+        lon_min, lon_max, lat_min, lat_max = EUROPE_EXTENT
+        row_min, col_min = rowcol(transform, lon_min, lat_max)
+        row_max, col_max = rowcol(transform, lon_max, lat_min)
+        row_min, row_max = sorted([row_min, row_max])
+        col_min, col_max = sorted([col_min, col_max])
+        data_crop = data[row_min:row_max+1, col_min:col_max+1]
+        
+        present_codes = sorted({int(c) for c in np.unique(data_crop) if int(c) in koppen_lookup})
+        if len(present_codes) > 0:
+            labels = [koppen_lookup[c] for c in present_codes]
+            colors = plt.cm.tab20.colors
+            cmap = ListedColormap([colors[i % len(colors)] for i in range(len(present_codes))])
+            code_to_index = {code: i for i, code in enumerate(present_codes)}
+            indexed = np.vectorize(lambda v: code_to_index.get(int(v), np.nan))(data_crop)
+            
+            ax.imshow(
+                indexed,
+                origin='upper',
+                extent=[lon_min, lon_max, lat_min, lat_max],
+                transform=ccrs.PlateCarree(),
+                cmap=cmap,
+                alpha=0.4,
+                zorder=1,
+            )
+    except Exception as e:
+        # Silently skip Köppen background on any error
+        pass
+
+def add_orography_overlay(ax, orog_path):
+    """Overlay ERA5 orography in grayscale."""
+    if not orog_path.exists():
+        return
+    
+    try:
+        ds = xr.open_dataset(orog_path)
+        if 'z' in ds:
+            z = ds['z'] / 9.80665  # geopotential -> meters
+            
+            # Handle multi-dimensional data by squeezing extra dimensions
+            if z.ndim > 2:
+                z = z.squeeze()
+            
+            # Select extent
+            z_crop = z.sel(
+                longitude=slice(EUROPE_EXTENT[0], EUROPE_EXTENT[1]),
+                latitude=slice(EUROPE_EXTENT[3], EUROPE_EXTENT[2])
+            )
+            
+            # Final squeeze in case selection created singleton dims
+            z_values = np.squeeze(z_crop.values)
+            
+            if z_values.ndim == 2:
+                ax.imshow(
+                    z_values,
+                    origin='upper',
+                    extent=EUROPE_EXTENT,
+                    transform=ccrs.PlateCarree(),
+                    cmap='Greys',
+                    alpha=0.15,
+                    zorder=2,
+                )
+    except Exception as e:
+        # Silently skip orography on any error
+        pass
+
+print("✓ Plotting functions defined")# Koppen & Orography loaders + preload (run once)
+from pathlib import Path
+import rasterio
+from rasterio.windows import from_bounds
+import xarray as xr
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def load_koppen_crop(koppen_path, extent):
+    """Return (indexed_image, cmap, extent_box) or (None, None, None) on error.
+    extent = (lon_min, lon_max, lat_min, lat_max)
+    """
+    if not koppen_path.exists():
+        return None, None, None
+    lon_min, lon_max, lat_min, lat_max = extent
+    try:
+        src = rasterio.open(str(koppen_path))
+        arr = src.read(1)
+        transform = src.transform
+        window = from_bounds(lon_min, lat_min, lon_max, lat_max, transform)
+        r0, c0 = int(window.row_off), int(window.col_off)
+        r1 = r0 + int(window.height)
+        c1 = c0 + int(window.width)
+        crop = arr[r0:r1, c0:c1]
+        src.close()
+
+        koppen_lookup = {
+            1: 'Af', 2: 'Am', 3: 'Aw', 4: 'BWh', 5: 'BWk', 6: 'BSh', 7: 'BSk',
+            8: 'Csa', 9: 'Csb', 10: 'Csc', 11: 'Cwa', 12: 'Cwb', 13: 'Cwc',
+            14: 'Cfa', 15: 'Cfb', 16: 'Cfc', 17: 'Dsa', 18: 'Dsb', 19: 'Dsc', 20: 'Dsd',
+            21: 'Dwa', 22: 'Dwb', 23: 'Dwc', 24: 'Dwd', 25: 'Dfa', 26: 'Dfb',
+            27: 'Dfc', 28: 'Dfd', 29: 'ET', 30: 'EF'
+        }
+
+        # Use full mapping for consistent colors across runs
+        full_codes = sorted(koppen_lookup.keys())
+        code_to_index = {code: i for i, code in enumerate(full_codes)}
+        indexed = np.full_like(crop, np.nan, dtype=float)
+        for code in full_codes:
+            indexed[crop == code] = code_to_index[code]
+
+        cmap = plt.cm.get_cmap('tab20', len(full_codes))
+        extent_box = [lon_min, lon_max, lat_min, lat_max]
+        return indexed, cmap, extent_box
+
+    except Exception as e:
+        print("Koppen load error:", e)
+        return None, None, None
+
+
+def load_orography_crop(orog_path, extent):
+    """Return (z_values_2d, vmin, vmax) or (None, None, None) on error."""
+    if not orog_path.exists():
+        return None, None, None
+    try:
+        ds = xr.open_dataset(orog_path)
+        var = 'z' if 'z' in ds else list(ds.data_vars)[0]
+        z = ds[var]
+        if var == 'z':
+            z = z / 9.80665
+        if z.ndim > 2:
+            z = z.squeeze()
+        lon_min, lon_max, lat_min, lat_max = extent
+        z_crop = z.sel(longitude=slice(lon_min, lon_max), latitude=slice(lat_max, lat_min))
+        z_values = np.squeeze(z_crop.values)
+        if z_values.ndim != 2:
+            return None, None, None
+        return z_values, np.nanmin(z_values), np.nanmax(z_values)
+    except Exception as e:
+        print("Orography load error:", e)
+        return None, None, None
+
+
+# Preload using notebook globals (if present)
+try:
+    koppen_image, koppen_cmap, koppen_extent = load_koppen_crop(KOPPEN_RASTER, EUROPE_EXTENT)
+except Exception:
+    koppen_image, koppen_cmap, koppen_extent = (None, None, None)
+
+try:
+    orog_image, orog_vmin, orog_vmax = load_orography_crop(OROG_RASTER, EUROPE_EXTENT)
+except Exception:
+    orog_image, orog_vmin, orog_vmax = (None, None, None)
+
+print(f"koppen_image: {None if koppen_image is None else koppen_image.shape}, orog_image: {None if orog_image is None else orog_image.shape}")
+# Figure 1: RMSE Maps over Europe (IMPROVED VISUALIZATION)
+# - Prominent Köppen background with distinct colors
+# - Visible RMSE grid dots with color mapping
+# - Proper coordinate handling and error checking
+
+import matplotlib.gridspec as gridspec
+import matplotlib.patches as mpatches
+import matplotlib.colors as mcolors
+import cartopy.feature as cfeature
+import warnings
+import time
+from rasterio.windows import from_bounds
+warnings.filterwarnings('ignore')
+
+try:
+    t_start = time.time()
+    
+    # ========== PRELOAD BACKGROUNDS ONCE ==========
+    lon_min, lon_max, lat_min, lat_max = EUROPE_EXTENT  # (-5, 25, 43, 58)
+    
+    # Load and crop Köppen once (RGBA so colors are fixed)
+    koppen_image = None
+    koppen_extent = None
+    koppen_legend = None
+    koppen_present_codes = []
+    try:
+        koppen_path = KOPPEN_RASTER
+        if not koppen_path.exists():
+            fallback = Path.home() / "Downloads" / "koppen_geiger_0p1.tif"
+            if fallback.exists():
+                koppen_path = fallback
+        if koppen_path.exists():
+            src = rasterio.open(str(koppen_path))
+            koppen_full = src.read(1)
+            koppen_transform = src.transform
+
+            window = from_bounds(lon_min, lat_min, lon_max, lat_max, koppen_transform)
+            row_min, col_min = int(window.row_off), int(window.col_off)
+            row_max = row_min + int(window.height)
+            col_max = col_min + int(window.width)
+            koppen_crop = koppen_full[row_min:row_max, col_min:col_max]
+
+            koppen_code_to_abbrev = {
+                1: "Af", 2: "Am", 3: "Aw", 4: "BWh", 5: "BWk", 6: "BSh", 7: "BSk",
+                8: "Csa", 9: "Csb", 10: "Csc", 11: "Cwa", 12: "Cwb", 13: "Cwc",
+                14: "Cfa", 15: "Cfb", 16: "Cfc", 17: "Dsa", 18: "Dsb", 19: "Dsc", 20: "Dsd",
+                21: "Dwa", 22: "Dwb", 23: "Dwc", 24: "Dwd", 25: "Dfa", 26: "Dfb",
+                27: "Dfc", 28: "Dfd", 29: "ET", 30: "EF"
+            }
+            koppen_abbrev_to_full = {
+                "Af": "Tropical rainforest",      "Am": "Tropical monsoon",
+                "Aw": "Tropical savanna",         "BWh": "Hot desert",
+                "BWk": "Cold desert",             "BSh": "Hot semi-arid",
+                "BSk": "Cold semi-arid",          "Csa": "Hot-summer Mediterranean",
+                "Csb": "Warm-summer Mediterranean", "Csc": "Cold-summer Mediterranean",
+                "Cwa": "Subtropical monsoon",     "Cwb": "Subtropical highland",
+                "Cwc": "Cold subtropical highland","Cfa": "Humid subtropical",
+                "Cfb": "Temperate oceanic",       "Cfc": "Subpolar oceanic",
+                "Dsa": "Hot-summer humid continental", "Dsb": "Warm-summer humid continental",
+                "Dsc": "Cold-summer humid continental", "Dsd": "Extremely cold-summer continental",
+                "Dwa": "Monsoon-influenced humid continental", "Dwb": "Dry-winter warm-summer continental",
+                "Dwc": "Dry-winter cold-summer continental", "Dwd": "Dry-winter extremely cold-summer continental",
+                "Dfa": "Hot humid continental",   "Dfb": "Warm-summer humid continental",
+                "Dfc": "Subarctic",               "Dfd": "Extremely cold subarctic",
+                "ET": "Alpine tundra",            "EF": "Polar ice cap"
+            }
+
+            color_map = plt.cm.tab20.colors
+            koppen_color_map = {code: color_map[i % 20] for i, code in enumerate(koppen_code_to_abbrev.keys())}
+
+            colored_koppen = np.zeros((*koppen_crop.shape, 4), dtype=float)
+            present_codes = sorted({int(c) for c in np.unique(koppen_crop) if int(c) in koppen_code_to_abbrev})
+            koppen_present_codes = present_codes
+            for code in present_codes:
+                rgba = plt.matplotlib.colors.to_rgba(koppen_color_map.get(code, "#f0f0f0"))
+                colored_koppen[koppen_crop == code] = rgba
+            colored_koppen[(koppen_crop < 1) | (koppen_crop > 30)] = plt.matplotlib.colors.to_rgba("#f0f0f0")
+
+            koppen_image = colored_koppen
+            koppen_extent = [lon_min, lon_max, lat_min, lat_max]
+
+            legend_patches = []
+            for code in present_codes:
+                abbrev = koppen_code_to_abbrev[code]
+                full_name = koppen_abbrev_to_full.get(abbrev, "Unknown")
+                patch = mpatches.Patch(color=koppen_color_map[code], label=f"{abbrev} – {full_name}")
+                legend_patches.append(patch)
+            koppen_legend = legend_patches
+
+            print(f"✓ Köppen loaded: {koppen_crop.shape}, {len(present_codes)} classes")
+            src.close()
+    except Exception as e:
+        print(f"⚠ Köppen background unavailable: {e}")
+    
+    # Load and crop orography once
+    orog_image = None
+    try:
+        if OROG_RASTER.exists():
+            ds_orog = xr.open_dataset(OROG_RASTER)
+            if 'z' in ds_orog:
+                z = ds_orog['z'] / 9.80665  # geopotential to meters
+                if z.ndim > 2:
+                    z = z.squeeze()
+                
+                # Crop to EUROPE_EXTENT
+                z_crop = z.sel(
+                    longitude=slice(lon_min, lon_max),
+                    latitude=slice(lat_max, lat_min)
+                )
+                z_values = np.squeeze(z_crop.values)
+                
+                if z_values.ndim == 2:
+                    orog_image = z_values
+                    orog_vmin, orog_vmax = np.nanmin(z_values), np.nanmax(z_values)
+                    print(f"✓ Orography loaded: {z_values.shape}")
+    except Exception as e:
+        print(f"⚠ Orography unavailable: {e}")
+    
+    print()
+
+    # ========== GLOBAL RMSE COLOR SCALE (shared across panels) ==========
+    global_vmin, global_vmax = None, None
+    rmse_norm = None
+    try:
+        vals = []
+        for var in VARIABLES:
+            ds_step = load_rmse_by_step(var)
+            rmse = ds_step['rmse'].isel(step=0).squeeze()
+            # Find lat/lon names
+            lat_name = None
+            lon_name = None
+            for dim in rmse.dims:
+                if dim in ('latitude', 'lat'):
+                    lat_name = dim
+                elif dim in ('longitude', 'lon'):
+                    lon_name = dim
+            if lat_name is None or lon_name is None:
+                continue
+            rmse_map = rmse.sel(
+                **{lat_name: slice(lat_max, lat_min), lon_name: slice(lon_min, lon_max)}
+            ).sortby(lat_name)
+            rmse_coarse = rmse_map.coarsen(**{lat_name: 4, lon_name: 4}, boundary='trim').mean()
+            arr = rmse_coarse.values
+            arr = arr[np.isfinite(arr)]
+            if arr.size:
+                vals.append(arr)
+        if vals:
+            all_vals = np.concatenate(vals)
+            if PLOT_CFG["rmse_vmin"] is not None and PLOT_CFG["rmse_vmax"] is not None:
+                global_vmin = float(PLOT_CFG["rmse_vmin"])
+                global_vmax = float(PLOT_CFG["rmse_vmax"])
+            else:
+                p_lo, p_hi = PLOT_CFG["rmse_pct"]
+                global_vmin = float(np.nanpercentile(all_vals, p_lo))
+                global_vmax = float(np.nanpercentile(all_vals, p_hi))
+            if PLOT_CFG["rmse_norm"] == "power":
+                rmse_norm = mcolors.PowerNorm(
+                    gamma=float(PLOT_CFG["rmse_gamma"]),
+                    vmin=global_vmin,
+                    vmax=global_vmax,
+                )
+            else:
+                rmse_norm = mcolors.Normalize(vmin=global_vmin, vmax=global_vmax)
+    except Exception:
+        global_vmin, global_vmax = None, None
+        rmse_norm = None
+    
+    # ========== PLOT LOOP ==========
+    fig = plt.figure(figsize=(18, 8))
+    gs = gridspec.GridSpec(1, 2, figure=fig, hspace=0.3, wspace=0.35)
+    rmse_mappable = None
+    
+    orog_mappable = None
+    for plot_idx, var in enumerate(VARIABLES):
+        print(f"  Plotting {var}...")
+        t_var_start = time.time()
+        
+        try:
+            ax = fig.add_subplot(gs[0, plot_idx], projection=ccrs.PlateCarree())
+            ax.set_extent(EUROPE_EXTENT, crs=ccrs.PlateCarree())
+            
+            # --- Load and crop RMSE to EUROPE_EXTENT ---
+            t_load = time.time()
+            ds_step = load_rmse_by_step(var)
+            rmse = ds_step['rmse']
+            rmse_full = rmse.isel(step=0).squeeze()
+            step_val = int(rmse_full.step.values)
+            
+            # Determine coordinate names (try both naming conventions)
+            lat_name = None
+            lon_name = None
+            for dim in rmse_full.dims:
+                if dim in ('latitude', 'lat'):
+                    lat_name = dim
+                elif dim in ('longitude', 'lon'):
+                    lon_name = dim
+            
+            if lat_name is None or lon_name is None:
+                print(f"    ✗ Cannot find lat/lon coords. Dims: {rmse_full.dims}")
+                ax.text(0.5, 0.5, f'Coordinate error:\nExpected lat/lon, got {rmse_full.dims}',
+                       ha='center', va='center', fontsize=10, color='red')
+                ax.axis('off')
+                continue
+            
+            # Crop to EUROPE_EXTENT
+            rmse_map = rmse_full.sel(
+                **{lat_name: slice(lat_max, lat_min), lon_name: slice(lon_min, lon_max)}
+            )
+            print(f"    Load: {time.time()-t_load:.2f}s")
+            
+            # --- Sort latitude ascending and coarsen ---
+            t_coarse = time.time()
+            rmse_map = rmse_map.sortby(lat_name)
+            rmse_coarse = rmse_map.coarsen(**{lat_name: 4, lon_name: 4}, boundary='trim').mean()
+            print(f"    Coarsen: {time.time()-t_coarse:.2f}s")
+            
+            # --- Extract coordinates ---
+            lats = rmse_coarse[lat_name].values
+            lons = rmse_coarse[lon_name].values
+            rmse_plot = rmse_coarse.values
+            extent_data = [lons.min(), lons.max(), lats.min(), lats.max()]
+            
+            print(f"    Data shape: {rmse_plot.shape}, extent: {extent_data}")
+            
+            # --- LAYER 0: Köppen background (PROMINENT) ---
+            if koppen_image is not None and koppen_extent is not None:
+                ax.imshow(
+                    koppen_image,
+                    origin='upper',
+                    extent=koppen_extent,
+                    transform=ccrs.PlateCarree(),
+                    alpha=PLOT_CFG["koppen_alpha"],
+                    zorder=0
+                )
+            
+            # --- LAYER 1: Orography overlay (pixelated grid) ---
+            if orog_image is not None:
+                orog_mappable = ax.imshow(
+                    orog_image,
+                    origin='upper',
+                    extent=[lon_min, lon_max, lat_min, lat_max],
+                    cmap='Greys',
+                    transform=ccrs.PlateCarree(),
+                    vmin=orog_vmin,
+                    vmax=orog_vmax,
+                    interpolation='nearest',
+                    alpha=PLOT_CFG["orog_alpha"],
+                    zorder=1
+                )
+            
+            # --- RMSE dots only (no background heatmap) ---
+            valid_mask = ~np.isnan(rmse_plot)
+            if global_vmin is not None and global_vmax is not None:
+                vmin, vmax = global_vmin, global_vmax
+            elif valid_mask.any():
+                vmin = np.nanpercentile(rmse_plot, 5)
+                vmax = np.nanpercentile(rmse_plot, 95)
+            else:
+                vmin, vmax = 0, 1
+            
+            # --- LAYER 5: Grid dots with COLOR MAPPING (VISIBLE) ---
+            t_dots = time.time()
+            stride = 2  # More frequent dots for visibility
+            lon_grid, lat_grid = np.meshgrid(lons, lats)
+            
+            # Flatten and create scatter with color values
+            lon_scatter = lon_grid[::stride, ::stride].ravel()
+            lat_scatter = lat_grid[::stride, ::stride].ravel()
+            rmse_scatter = rmse_plot[::stride, ::stride].ravel()
+            
+            # Only plot where data exists
+            valid_idx = ~np.isnan(rmse_scatter)
+            scatter_kwargs = dict(
+                c=rmse_scatter[valid_idx],
+                cmap=PLOT_CFG["rmse_cmap"],
+                s=PLOT_CFG["rmse_size"],
+                alpha=PLOT_CFG["rmse_alpha"],
+                edgecolors=PLOT_CFG["rmse_edgecolor"],
+                linewidths=0.5,
+                transform=ccrs.PlateCarree(),
+                zorder=5,
+                marker='o',
+            )
+            if rmse_norm is not None:
+                scatter_kwargs["norm"] = rmse_norm
+            else:
+                scatter_kwargs["vmin"] = vmin
+                scatter_kwargs["vmax"] = vmax
+
+            scatter = ax.scatter(
+                lon_scatter[valid_idx],
+                lat_scatter[valid_idx],
+                **scatter_kwargs
+            )
+            if rmse_mappable is None:
+                rmse_mappable = scatter
+            print(f"    Dots: {time.time()-t_dots:.2f}s")
+            
+            # --- Map features (coastlines, borders) ---
+            ax.coastlines(linewidth=1.0, color='black', zorder=10)
+            ax.add_feature(cfeature.BORDERS, linewidth=0.7, color='black', linestyle='-', zorder=10)
+            
+            gl = ax.gridlines(draw_labels=True, linestyle='--', linewidth=0.2, alpha=0.4, zorder=2)
+            gl.top_labels = False
+            gl.right_labels = False
+            
+            # --- Title and stats ---
+            ax.set_title(f'{var} – Lead {step_val}h (RMSE dots, °C)',
+                        fontsize=12, fontweight='bold', pad=10)
+            
+            if valid_mask.any():
+                mean_val = np.nanmean(rmse_plot[valid_mask])
+                min_val = np.nanmin(rmse_plot[valid_mask])
+                max_val = np.nanmax(rmse_plot[valid_mask])
+                stats_text = (
+                    f'Mean: {mean_val:.2f}°C\n'
+                    f'Min: {min_val:.2f}°C\n'
+                    f'Max: {max_val:.2f}°C\n'
+                    f'Samples: {valid_mask.sum()}'
+                )
+                ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+                       fontsize=8, verticalalignment='top',
+                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.85), zorder=20)
+            
+            print(f"    {var} total: {time.time()-t_var_start:.2f}s")
+            
+        except FileNotFoundError as e:
+            ax = fig.add_subplot(gs[0, plot_idx])
+            ax.text(0.5, 0.5, f'Data not found:\n{var}\n\nRe-run cell 6 after\ndeleting old outputs',
+                   ha='center', va='center', fontsize=11, color='red')
+            ax.axis('off')
+        except Exception as e:
+            ax = fig.add_subplot(gs[0, plot_idx])
+            error_msg = f'{type(e).__name__}: {str(e)[:60]}'
+            ax.text(0.5, 0.5, f'Error:\n{error_msg}',
+                   ha='center', va='center', fontsize=9, color='red')
+            ax.axis('off')
+            import traceback
+            traceback.print_exc()
+
+    # Shared RMSE colorbar (single bar for both plots) placed outside plots
+    if rmse_mappable is not None:
+        cax = fig.add_axes([0.92, 0.20, 0.015, 0.60])
+        cbar_rmse = fig.colorbar(rmse_mappable, cax=cax, orientation='vertical')
+        cbar_rmse.set_label('RMSE (°C)', fontsize=10, fontweight='bold')
+        cbar_rmse.ax.tick_params(labelsize=9)
+
+    # Add a shared orography colorbar if available
+    if orog_mappable is not None:
+        cbar_orog = fig.colorbar(orog_mappable, ax=fig.axes, orientation='horizontal', shrink=0.7, pad=0.08)
+        cbar_orog.set_label('Orography Height (m)', fontsize=9)
+        cbar_orog.ax.tick_params(labelsize=8)
+
+    # Add Köppen legend (present classes only) below orography bar
+    if koppen_legend:
+        fig.legend(
+            handles=koppen_legend,
+            loc='lower center',
+            bbox_to_anchor=(0.5, -0.26),
+            ncol=PLOT_CFG["legend_cols"],
+            fontsize=8,
+            title="Köppen Climate Zones",
+            frameon=False
+        )
+
+    # Add Köppen full-name mapping text at the very bottom (only present classes)
+    try:
+        koppen_items = []
+        if koppen_present_codes:
+            for code in koppen_present_codes:
+                abbrev = koppen_code_to_abbrev.get(code)
+                if not abbrev:
+                    continue
+                full_name = koppen_abbrev_to_full.get(abbrev, "Unknown")
+                koppen_items.append((code, f"■ {abbrev} – {full_name}"))
+        else:
+            koppen_items = []
+        # Split into 3 columns
+        if koppen_items:
+            cols = 3
+            rows = int(np.ceil(len(koppen_items) / cols))
+            columns = [koppen_items[i*rows:(i+1)*rows] for i in range(cols)]
+            x_positions = [0.10, 0.40, 0.70]
+            for x, col in zip(x_positions, columns):
+                y = 0.02
+                for code, line in col:
+                    fig.text(
+                        x, y,
+                        line,
+                        ha='left',
+                        va='bottom',
+                        fontsize=7,
+                        color=koppen_color_map.get(code, "#555555"),
+                    )
+                    y += 0.018
+    except Exception:
+        pass
+
+    # Final touches
+    try:
+        date_min = str(aifs_index["valid_dt"].min())
+        date_max = str(aifs_index["valid_dt"].max())
+    except Exception:
+        date_min, date_max = "N/A", "N/A"
+
+    suptitle = (
+        "RMSE Comparison – AIFS vs ERA5 over Europe\n"
+        f"Köppen background, Orography grid, RMSE dots | "
+        f"Valid dates: {date_min} to {date_max}"
+    )
+    fig.suptitle(suptitle, fontsize=13, fontweight='bold', y=0.96)
+    fig.subplots_adjust(bottom=0.36, right=0.90, top=0.86)
+    
+    fig_path = '/tmp/rmse_maps_corrected.png'
+    t_save = time.time()
+    plt.savefig(fig_path, dpi=120, bbox_inches='tight')
+    print(f"\n  Save: {time.time()-t_save:.2f}s")
+    
+    plt.show()
+    print(f"\n✓ Figure 1 complete in {time.time()-t_start:.2f}s")
+    print(f"✓ Saved to: {fig_path}")
+
+    # Close fig1 before creating figure 2 to avoid overlaps
+    plt.close(fig)
+
+    # --- Figure 2: Mean RMSE vs lead time (skill proxy) ---
+    try:
+        fig2 = plt.figure(figsize=(7.5, 5.0))
+        ax2 = fig2.add_subplot(1, 1, 1)
+        all_rows = []
+        for var in VARIABLES:
+            csv_path = RMSE_OUT / f'rmse_by_step_{var}.csv'
+            if not csv_path.exists():
+                continue
+            df = pd.read_csv(csv_path)
+            df["variable"] = var
+            all_rows.append(df)
+        if all_rows:
+            df_all = pd.concat(all_rows, ignore_index=True)
+        else:
+            df_all = pd.DataFrame(columns=["step", "rmse_mean", "variable"])
+
+        # Determine y-range for consistent interpretation
+        if not df_all.empty:
+            if PLOT_CFG["skill_vmin"] is not None and PLOT_CFG["skill_vmax"] is not None:
+                y_min = float(PLOT_CFG["skill_vmin"])
+                y_max = float(PLOT_CFG["skill_vmax"])
+            else:
+                p_lo, p_hi = PLOT_CFG["skill_pct"]
+                y_min = float(np.nanpercentile(df_all["rmse_mean"], p_lo))
+                y_max = float(np.nanpercentile(df_all["rmse_mean"], p_hi))
+        else:
+            y_min, y_max = None, None
+
+        # Plot per variable with color mapped to RMSE value
+        cmap = plt.get_cmap(PLOT_CFG["skill_cmap"])
+        norm = None
+        if y_min is not None and y_max is not None:
+            norm = mcolors.Normalize(vmin=y_min, vmax=y_max)
+
+        for var in VARIABLES:
+            df = df_all[df_all["variable"] == var]
+            if df.empty:
+                continue
+            if norm is not None:
+                colors = cmap(norm(df["rmse_mean"].values))
+            else:
+                colors = None
+            ax2.plot(df['step'], df['rmse_mean'], color="#333333", linewidth=1.2, alpha=0.6)
+            ax2.scatter(df['step'], df['rmse_mean'], c=colors, cmap=cmap, norm=norm, s=55, label=var, edgecolors="black")
+        ax2.set_title("Mean RMSE vs Lead Time (AIFS vs ERA5)", fontsize=12, fontweight='bold')
+        ax2.set_xlabel("Lead time (hours)")
+        ax2.set_ylabel("RMSE (°C)")
+        if y_min is not None and y_max is not None:
+            pad = 0.05 * (y_max - y_min) if y_max > y_min else 0.1
+            ax2.set_ylim(y_min - pad, y_max + pad)
+        ax2.grid(True, linestyle='--', alpha=0.4)
+        ax2.legend(frameon=False)
+        if norm is not None:
+            cbar2 = fig2.colorbar(
+                plt.cm.ScalarMappable(norm=norm, cmap=cmap),
+                ax=ax2, orientation='vertical', pad=0.03
+            )
+            cbar2.set_label("RMSE (°C)")
+
+        # Add metadata text for interpretability
+        try:
+            date_min = str(aifs_index["valid_dt"].min())
+            date_max = str(aifs_index["valid_dt"].max())
+        except Exception:
+            date_min, date_max = "N/A", "N/A"
+        ax2.text(
+            0.02, 0.98,
+            f"Valid dates: {date_min} to {date_max}\n"
+            f"Variables: {', '.join([v for v in VARIABLES if v in df_all['variable'].unique()])}\n"
+            "Metric: Mean RMSE by lead step",
+            transform=ax2.transAxes, va="top", fontsize=8,
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.85)
+        )
+        fig2.tight_layout()
+        fig2_path = '/tmp/rmse_mean_vs_lead.png'
+        fig2.savefig(fig2_path, dpi=140, bbox_inches='tight')
+        print(f"✓ Figure 2 saved to: {fig2_path}")
+        plt.show()
+    except Exception as e:
+        print(f"✗ Figure 2 failed: {type(e).__name__}: {e}")
+    
+except Exception as e:
+    print(f"\n✗ Figure 1 failed: {type(e).__name__}: {e}")
+    import traceback
+    traceback.print_exc()
+finally:
+    plt.close('all')

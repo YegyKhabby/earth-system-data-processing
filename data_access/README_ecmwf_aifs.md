@@ -25,7 +25,7 @@ This project demonstrates programmatic access to ECMWF's Artificial Intelligence
 
 ## Repository Content
 
-- **`data_access/AIF.ipynb`**: Main notebook for downloading AIFS Single surface forecasts and creating visualizations
+- **`data_access/notebooks/AIF.ipynb`**: Main notebook for downloading AIFS Single surface forecasts and creating visualizations
 - **`environment.yml`**: Conda environment specification with all dependencies
 - **`data_access/aifs_input_output_fields.png`**: AIFS model architecture diagram
 
@@ -47,14 +47,14 @@ The environment includes `earthkit-data` (ECMWF Open Data client), `xarray`/`cfg
 The automated downloader uses a YAML config file:
 
 ```bash
-python data_access/download_aifs_daily.py --config data_access/aifs_config.yaml
+python data_access/scripts/download_aifs_daily.py --config data_access/aifs_config.yaml
 ```
 
 **macOS note (TMPDIR):** If you see a temp directory error, run with a writable temp path:
 
 ```bash
 mkdir -p /Users/yeganehkhabbazian/Projects/tmp
-TMPDIR=/Users/yeganehkhabbazian/Projects/tmp python data_access/download_aifs_daily.py --config data_access/aifs_config.yaml
+TMPDIR=/Users/yeganehkhabbazian/Projects/tmp python data_access/scripts/download_aifs_daily.py --config data_access/aifs_config.yaml
 ```
 
 Key config settings live in `data_access/aifs_config.yaml` (episode length, init hours, steps, variables, output folder, retries, etc.).  
@@ -66,7 +66,7 @@ The script writes files under `out_dir/YYYY/MM/DD/` and produces a `manifest.csv
 ### Running the Notebook
 
 ```bash
-jupyter lab data_access/AIF.ipynb
+jupyter lab data_access/notebooks/AIF.ipynb
 ```
 
 ## Data Access and Download Scope

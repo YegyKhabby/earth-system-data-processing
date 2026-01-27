@@ -3,10 +3,11 @@
 
 # Configuration
 $TaskName = "ECMWF_AIFS_Daily_Download"
-$ScriptPath = "$PSScriptRoot\download_aifs_daily.py"
+$ScriptPath = Join-Path $PSScriptRoot "..\download_aifs_daily.py"
+$Era5ScriptPath = Join-Path $PSScriptRoot "..\era5_download_only.py"
 $CondaPath = "C:\Users\90542\miniconda3\Scripts\conda.exe"
 $CondaEnv = "aifs_clean"
-$WorkingDir = $PSScriptRoot
+$WorkingDir = (Resolve-Path (Join-Path $PSScriptRoot "..\.."))
 
 # Schedule time (runs every day at 11:00 PM)
 $ScheduleTime = "23:00"
@@ -25,7 +26,8 @@ if (-not (Test-Path $CondaPath)) {
 }
 
 # Create the scheduled task action to run via conda environment
-$ArgumentList = "run -n $CondaEnv python `"$ScriptPath`""
+$ConfigPath = Join-Path $PSScriptRoot "..\..\aifs_config.yaml"
+$ArgumentList = "run -n $CondaEnv python `"$ScriptPath`" --config `"$ConfigPath`"; run -n $CondaEnv python `"$Era5ScriptPath`""
 $Action = New-ScheduledTaskAction `
     -Execute $CondaPath `
     -Argument $ArgumentList `

@@ -20,12 +20,12 @@ from typing import List, Optional
 import shutil
 
 # Project directories
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR_BASE = BASE_DIR / "data"
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+DATA_DIR_BASE = BASE_DIR / "data" / "era5" / "downloads"
 DATA_DIR_MOCK = DATA_DIR_BASE / "mock"
 DATA_DIR_REAL = DATA_DIR_BASE / "real"
 
-ARCHIVE_DIR_BASE = BASE_DIR / "archive"
+ARCHIVE_DIR_BASE = BASE_DIR / "data" / "era5" / "archive"
 ARCHIVE_DIR_MOCK = ARCHIVE_DIR_BASE / "mock"
 ARCHIVE_DIR_REAL = ARCHIVE_DIR_BASE / "real"
 
@@ -53,7 +53,7 @@ ERA5_TASKS = [
 ]
 
 DEFAULT_START_DATE = datetime(2026, 1, 19)
-DEFAULT_END_DATE = datetime(2026, 1, 20)
+DEFAULT_END_DATE = datetime.utcnow() - timedelta(days=4)
 
 # Runtime-selected dirs (initialized below)
 DATA_DIR = DATA_DIR_REAL

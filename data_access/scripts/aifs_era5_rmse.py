@@ -168,9 +168,16 @@ def _era5_has_time(era5_path: Path, hour: int) -> bool:
 
     try:
         with xr.open_dataset(era5_path) as ds:
-            if "time" not in ds:
+            # Check for both 'time' and 'valid_time' coordinates
+            time_coord = None
+            if "time" in ds:
+                time_coord = ds["time"]
+            elif "valid_time" in ds:
+                time_coord = ds["valid_time"]
+            else:
                 return False
-            hours = pd.to_datetime(ds["time"].values).hour
+            
+            hours = pd.to_datetime(time_coord.values).hour
             return int(hour) in set(int(h) for h in hours)
     except Exception:
         return False
@@ -410,18 +417,25 @@ def _select_aifs_field(ds: "xr.Dataset", aifs_cfg: dict) -> "xr.DataArray":
 
 
 def _select_aifs_time(da: "xr.DataArray", valid_dt: datetime, step_hours: int | None = None) -> "xr.DataArray":
-    """Select the AIFS time slice if a time-like coordinate exists."""
-    if "valid_time" in da.coords:
+    """Select the AIFS time slice if a time-like coordinate exists and is indexed."""
+    # Only try to select on coordinates that are actually dimensions or indexed
+    if "valid_time" in da.dims or ("valid_time" in da.indexes):
         return da.sel(valid_time=valid_dt)
-    if "time" in da.coords:
+    if "time" in da.dims or ("time" in da.indexes):
         return da.sel(time=valid_dt)
-    if "step" in da.coords:
+    if "step" in da.dims or ("step" in da.indexes):
         if step_hours is None:
             return da
         try:
-            return da.sel(step=step_hours)
+            step_td = np.timedelta64(step_hours, 'h')
+            return da.sel(step=step_td)
         except Exception:
-            return da
+            try:
+                return da.sel(step=step_hours)
+            except Exception:
+                return da
+    # If no time-like dimension is found, just return the data as-is
+    # (it may already be a single time slice from cfgrib)
     return da
 
 
@@ -441,15 +455,23 @@ def _select_era5_field(ds: "xr.Dataset", era5_cfg: dict) -> "xr.DataArray":
 
 
 def _select_time(da: "xr.DataArray", valid_dt: datetime) -> "xr.DataArray":
-    if "time" not in da.coords:
-        raise RuntimeError("No time coordinate in ERA5 data")
+    # Check for both 'time' and 'valid_time' coordinates
+    time_coord = None
+    if "time" in da.coords:
+        time_coord = "time"
+    elif "valid_time" in da.coords:
+        time_coord = "valid_time"
+    else:
+        raise RuntimeError("No time or valid_time coordinate in ERA5 data")
+    
     try:
-        return da.sel(time=valid_dt)
+        return da.sel({time_coord: valid_dt})
     except Exception:
         try:
-            return da.sel(time=np.datetime64(valid_dt), method="nearest", tolerance=np.timedelta64(30, "m"))
+            return da.sel({time_coord: np.datetime64(valid_dt)}, method="nearest", tolerance=np.timedelta64(30, "m"))
         except Exception:
             raise RuntimeError("time_not_found")
+
 
 
 def compute_pair_rmse(
@@ -480,7 +502,7 @@ def compute_pair_rmse(
             da_era5 = crop_to_bbox(da_era5, bbox)
 
         # Convert temperature fields to Celsius for consistent RMSE units
-        if variable_key == "2t":
+        if variable_key in {"2t", "t500"}:
             da_aifs = da_aifs - 273.15
             da_era5 = da_era5 - 273.15
         err = da_aifs - da_era5
@@ -575,6 +597,19 @@ def compute_rmse_for_pairs(
         .agg(rmse_mean=("rmse_mean", "mean"), n_samples=("rmse_mean", "count"))
     )
     return pairs_manifest, rmse_by_step
+
+
+def compute_rmse_by_step_by_day(pairs_manifest: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate RMSE by valid date and lead step from a pairs manifest."""
+    ok_df = pairs_manifest[pairs_manifest["status"] == "ok"].copy()
+    if ok_df.empty:
+        return pd.DataFrame(columns=["variable", "valid_date", "step", "rmse_mean", "n_samples"])
+    ok_df["valid_date"] = pd.to_datetime(ok_df["valid_dt"]).dt.date
+    rmse_by_step_by_day = (
+        ok_df.groupby(["variable", "valid_date", "step"], as_index=False)
+        .agg(rmse_mean=("rmse_mean", "mean"), n_samples=("rmse_mean", "count"))
+    )
+    return rmse_by_step_by_day
 
 
 def aggregate_rmse_map(

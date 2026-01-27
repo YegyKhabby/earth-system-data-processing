@@ -139,8 +139,10 @@ def download_aifs_data(cfg, dry_run: bool = False, overwrite: bool = False, retr
     logger.info("Starting AIFS data download")
     logger.info("=" * 60)
 
-    # Create output directory
-    OUT = Path(cfg["out_dir"]).resolve()
+    # Create output directory (resolve relative to project root)
+    base_dir = Path(__file__).resolve().parent.parent.parent
+    out_dir = Path(cfg["out_dir"])
+    OUT = (base_dir / out_dir).resolve() if not out_dir.is_absolute() else out_dir.resolve()
     OUT.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {OUT}")
     logger.info(f"Dates to download: {cfg['dates']}")
@@ -368,7 +370,7 @@ def download_aifs_data(cfg, dry_run: bool = False, overwrite: bool = False, retr
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download ECMWF AIFS data (surface and optional pressure levels).")
-    parser.add_argument("--config", type=str, default=str(Path(__file__).parent / "aifs_config.yaml"), help="Path to YAML config.")
+    parser.add_argument("--config", type=str, default=str(Path(__file__).resolve().parent.parent / "aifs_config.yaml"), help="Path to YAML config.")
     parser.add_argument("--start-date", type=str, help="Start date (YYYY-MM-DD).")
     parser.add_argument("--end-date", type=str, help="End date (YYYY-MM-DD).")
     parser.add_argument("--days", type=int, default=None, help="Number of recent days to download (default from config).")

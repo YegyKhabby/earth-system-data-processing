@@ -3,9 +3,10 @@
 
 # Configuration
 $TaskName = "ECMWF_AIFS_Daily_Download"
-$ScriptPath = "$PSScriptRoot\download_aifs_daily.py"
+$ScriptPath = Join-Path $PSScriptRoot "..\download_aifs_daily.py"
+$Era5ScriptPath = Join-Path $PSScriptRoot "..\era5_download_only.py"
 $PythonPath = (Get-Command python).Source  # Automatically finds Python
-$WorkingDir = $PSScriptRoot
+$WorkingDir = (Resolve-Path (Join-Path $PSScriptRoot "..\.."))
 
 # Schedule time (runs every day at 11:00 PM)
 $ScheduleTime = "23:00"
@@ -18,8 +19,8 @@ if (-not (Test-Path $ScriptPath)) {
 
 # Create the scheduled task action
 $Action = New-ScheduledTaskAction `
-    -Execute $PythonPath `
-    -Argument $ScriptPath `
+    -Execute powershell.exe `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -Command `"& $PythonPath $ScriptPath --config `\"$(Join-Path $PSScriptRoot '..\\..\\aifs_config.yaml')`\"; & $PythonPath $Era5ScriptPath`"" `
     -WorkingDirectory $WorkingDir
 
 # Create the trigger (daily at specified time)
