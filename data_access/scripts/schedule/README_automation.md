@@ -38,42 +38,10 @@ The script will now run automatically every day at **2:00 PM** (14:00).
 
 This does not affect Windows users. It installs a per-user LaunchAgent on macOS only.
 
-1. **Create the LaunchAgent**
+1. **Create the LaunchAgent (macOS)**
    ```bash
-   mkdir -p ~/Library/LaunchAgents
-   cat > ~/Library/LaunchAgents/com.yeg.aifs-download.plist <<'EOF'
-   <?xml version="1.0" encoding="UTF-8"?>
-   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-   <plist version="1.0">
-     <dict>
-       <key>Label</key>
-       <string>com.yeg.aifs-download</string>
-       <key>ProgramArguments</key>
-       <array>
-         <string>/usr/bin/env</string>
-         <string>TMPDIR=/Users/yeganehkhabbazian/Projects/tmp</string>
-         <string>python3</string>
-         <string>/Users/yeganehkhabbazian/Projects/Earth_System/earth-system-data-processing/data_access/scripts/download_aifs_daily.py</string>
-         <string>--config</string>
-         <string>/Users/yeganehkhabbazian/Projects/Earth_System/earth-system-data-processing/data_access/aifs_config.yaml</string>
-       </array>
-       <key>WorkingDirectory</key>
-       <string>/Users/yeganehkhabbazian/Projects/Earth_System/earth-system-data-processing</string>
-       <key>StartCalendarInterval</key>
-       <dict>
-         <key>Hour</key><integer>23</integer>
-         <key>Minute</key><integer>0</integer>
-       </dict>
-       <key>StandardOutPath</key>
-       <string>/Users/yeganehkhabbazian/Projects/Earth_System/earth-system-data-processing/data_access/logs/aifs_download_stdout.log</string>
-       <key>StandardErrorPath</key>
-       <string>/Users/yeganehkhabbazian/Projects/Earth_System/earth-system-data-processing/data_access/logs/aifs_download_stderr.log</string>
-       <key>RunAtLoad</key>
-       <true/>
-     </dict>
-   </plist>
-   EOF
+   chmod +x scripts/schedule/schedule_daily_download_macos.sh
+   scripts/schedule/schedule_daily_download_macos.sh
    ```
 
 2. **Load the agent**
@@ -86,6 +54,11 @@ This does not affect Windows users. It installs a per-user LaunchAgent on macOS 
    ```bash
    launchctl list | grep com.yeg.aifs-download
    ```
+
+The macOS script lives at:
+- **scripts/schedule/schedule_daily_download_macos.sh**
+
+Edit the variables at the top of that file to match your conda path, env name, and schedule time.
 
 ### Option 3: Manual Execution
 
