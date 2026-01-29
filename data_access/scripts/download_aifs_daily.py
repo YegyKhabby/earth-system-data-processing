@@ -17,6 +17,7 @@ import sys
 import logging
 from typing import Any, Dict
 import pandas as pd
+import shutil
 
 # Set up logging
 log_dir = Path(__file__).parent / "logs"
@@ -148,7 +149,25 @@ def download_aifs_data(cfg, dry_run: bool = False, overwrite: bool = False, retr
     logger.info(f"Dates to download: {cfg['dates']}")
     if cfg.get("area") is not None:
         logger.info(f"Spatial subset (N,W,S,E): {cfg['area']}")
+
+    # Disk space check (guardrail)
+    min_free_gb = float(cfg.get("min_free_gb", 2.0))
+    try:
+        total_b, used_b, free_b = shutil.disk_usage(OUT)
+        free_gb = free_b / (1024 ** 3)
+        if free_gb < min_free_gb:
+            raise RuntimeError(
+                f"Insufficient disk space at {OUT}: {free_gb:.2f} GB free, "
+                f"minimum required is {min_free_gb:.2f} GB"
+            )
+        logger.info(f"Disk space OK: {free_gb:.2f} GB free (min {min_free_gb:.2f} GB)")
+    except Exception as e:
+        logger.error(f"Disk space check failed: {e}")
+        raise
     
+    def _size_ok(file_size_mb: float, min_mb: float, max_mb: float) -> bool:
+        return (min_mb is None or file_size_mb >= min_mb) and (max_mb is None or file_size_mb <= max_mb)
+
     start_time = time.time()
     success_count = 0
     error_count = 0
@@ -233,10 +252,17 @@ def download_aifs_data(cfg, dry_run: bool = False, overwrite: bool = False, retr
                                 else:
                                     ds.save(str(target_file))
                                     file_size = target_file.stat().st_size
+                                    file_size_mb = file_size / (1024 * 1024)
                                     if file_size == 0:
                                         raise RuntimeError("Downloaded file is empty")
+                                    if not _size_ok(file_size_mb, cfg.get("sfc_min_mb"), cfg.get("sfc_max_mb")):
+                                        logger.warning(
+                                            f"Unexpected SFC file size: {file_size_mb:.2f} MB "
+                                            f"(expected {cfg.get('sfc_min_mb')} to {cfg.get('sfc_max_mb')} MB)"
+                                        )
+                                        error_count += 1
                                     total_size += file_size
-                                    logger.info(f"Saved: {target_file.name} ({file_size / (1024*1024):.2f} MB)")
+                                    logger.info(f"Saved: {target_file.name} ({file_size_mb:.2f} MB)")
                                     success_count += 1
                                     manifest.append({
                                         "date": date,
@@ -327,10 +353,17 @@ def download_aifs_data(cfg, dry_run: bool = False, overwrite: bool = False, retr
                             else:
                                 ds_pl.save(str(target_file_pl))
                                 file_size = target_file_pl.stat().st_size
+                                file_size_mb = file_size / (1024 * 1024)
                                 if file_size == 0:
                                     raise RuntimeError("Downloaded file is empty")
+                                if not _size_ok(file_size_mb, cfg.get("pl_min_mb"), cfg.get("pl_max_mb")):
+                                    logger.warning(
+                                        f"Unexpected PL file size: {file_size_mb:.2f} MB "
+                                        f"(expected {cfg.get('pl_min_mb')} to {cfg.get('pl_max_mb')} MB)"
+                                    )
+                                    error_count += 1
                                 total_size += file_size
-                                logger.info(f"Saved: {target_file_pl.name} ({file_size / (1024*1024):.2f} MB)")
+                                logger.info(f"Saved: {target_file_pl.name} ({file_size_mb:.2f} MB)")
                                 success_count += 1
                                 manifest.append({
                                     "date": date,
@@ -431,6 +464,11 @@ if __name__ == "__main__":
         "pl_levels": pl_levels,
         "levtypes": levtypes,
         "out_dir": Path(args.out_dir) if args.out_dir else Path(cfg_aifs.get("out_dir", Path(__file__).parent / "data" / "aifs")),
+        # Size validation (MB)
+        "sfc_min_mb": float(cfg_aifs.get("sfc_min_mb", 1.0)),
+        "sfc_max_mb": float(cfg_aifs.get("sfc_max_mb", 5.0)),
+        "pl_min_mb": float(cfg_aifs.get("pl_min_mb", 0.2)),
+        "pl_max_mb": float(cfg_aifs.get("pl_max_mb", 1.5)),
     }
     region = cfg_aifs.get("region")
     if region and region != "global" and not args.area:
