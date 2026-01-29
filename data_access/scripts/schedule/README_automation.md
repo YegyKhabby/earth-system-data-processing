@@ -1,14 +1,16 @@
-# AIFS Data Download Automation Guide
+# AIFS & ERA5 Data Download Automation Guide
 
-This guide explains how to automatically download ECMWF AIFS forecast data every day.
+This guide explains how to automate daily AIFS downloads and where to find AIFS/ERA5 logs.
 
 ## Overview
 
 The automation consists of:
-- **[scripts/download_aifs_daily.py](scripts/download_aifs_daily.py)**: Python script driven by `aifs_config.yaml`
-- **[aifs_config.yaml](aifs_config.yaml)**: Configuration for dates, steps, variables, and output paths
-- **[scripts/schedule/schedule_daily_download.ps1](scripts/schedule/schedule_daily_download.ps1)**: PowerShell script to set up Windows Task Scheduler
-- **logs/**: Directory where download logs are stored (created automatically)
+- **`scripts/download_aifs_daily.py`**: Python script driven by `aifs_config.yaml`
+- **`aifs_config.yaml`**: Configuration for dates, steps, variables, output paths, and retries
+- **`scripts/schedule/schedule_daily_download.ps1`**: PowerShell script to set up Windows Task Scheduler
+- **`scripts/schedule/schedule_daily_download_macos.sh`**: macOS LaunchAgent helper
+- **`logs/aifs_log/`**: AIFS download logs (created automatically)
+- **`logs/era5_log/`**: ERA5 download logs (created automatically)
 
 ## Quick Start
 
@@ -32,7 +34,7 @@ The automation consists of:
    Get-ScheduledTask -TaskName "ECMWF_AIFS_Daily_Download"
    ```
 
-The script will now run automatically every day at **2:00 PM** (14:00).
+The script will now run automatically every day at **11:00 PM** (23:00).
 
 ### Option 2: macOS LaunchAgent
 
@@ -56,9 +58,13 @@ This does not affect Windows users. It installs a per-user LaunchAgent on macOS 
    ```
 
 The macOS script lives at:
-- **scripts/schedule/schedule_daily_download_macos.sh**
+- **`scripts/schedule/schedule_daily_download_macos.sh`**
 
-Edit the variables at the top of that file to match your conda path, env name, and schedule time.
+The script is portable: it auto-detects the project root based on its own location.
+You only need to set:
+- `USE_CONDA` ("auto", "yes", "no")
+- `CONDA_ENV` (your env name)
+- `SCHEDULE_HOUR` / `SCHEDULE_MINUTE`
 
 ### Option 3: Manual Execution
 
@@ -75,7 +81,7 @@ python data_access/scripts/download_aifs_daily.py --config data_access/aifs_conf
 Edit line 12 in [scripts/schedule/schedule_daily_download.ps1](scripts/schedule/schedule_daily_download.ps1):
 
 ```powershell
-$ScheduleTime = "14:00"  # Change to your preferred time (24-hour format)
+$ScheduleTime = "23:00"
 ```
 
 Then re-run the script to update the schedule.
@@ -118,13 +124,13 @@ Unregister-ScheduledTask -TaskName "ECMWF_AIFS_Daily_Download" -Confirm:$false
 
 ### Log Files
 
-Every run creates a log file in `logs/aifs_download_YYYYMMDD.log`:
+Every run creates a log file in `logs/aifs_log/aifs_download_YYYYMMDD.log`:
 
 ```
-2026-01-08 14:00:01 - INFO - Starting AIFS data download
-2026-01-08 14:00:02 - INFO - Output directory: d:\earth-system-data-processing\data_access\data\aifs
-2026-01-08 14:00:02 - INFO - Dates to download: ['2026-01-05', '2026-01-06', '2026-01-07']
-2026-01-08 14:00:15 - INFO - ✓ Saved: aifs-single_20260105_12_sfc_step006_0p25.grib2 (2.41 MB)
+2026-01-08 23:00:01 - INFO - Starting AIFS data download
+2026-01-08 23:00:02 - INFO - Output directory: d:\earth-system-data-processing\data_access\data\aifs
+2026-01-08 23:00:02 - INFO - Dates to download: ['2026-01-05', '2026-01-06', '2026-01-07']
+2026-01-08 23:00:15 - INFO - ✓ Saved: aifs-single_20260105_12_sfc_step006_0p25.grib2 (2.41 MB)
 ...
 ```
 
@@ -132,13 +138,21 @@ Every run creates a log file in `logs/aifs_download_YYYYMMDD.log`:
 
 ```powershell
 # View today's log
-Get-Content logs\aifs_download_$(Get-Date -Format "yyyyMMdd").log
+Get-Content logs\aifs_log\aifs_download_$(Get-Date -Format "yyyyMMdd").log
 
 # View last 20 lines
-Get-Content logs\aifs_download_$(Get-Date -Format "yyyyMMdd").log -Tail 20
+Get-Content logs\aifs_log\aifs_download_$(Get-Date -Format "yyyyMMdd").log -Tail 20
 
 # List all logs
-Get-ChildItem logs\*.log | Sort-Object LastWriteTime -Descending
+Get-ChildItem logs\aifs_log\*.log | Sort-Object LastWriteTime -Descending
+```
+
+### ERA5 Logs (Windows)
+
+ERA5 logs are written to `logs\era5_log\era5_download_YYYYMMDD.log`:
+
+```powershell
+Get-Content logs\era5_log\era5_download_$(Get-Date -Format "yyyyMMdd").log -Tail 20
 ```
 
 ## Troubleshooting
@@ -215,7 +229,7 @@ Get-ChildItem data\aifs\*.grib2 | Where-Object {$_.LastWriteTime -lt (Get-Date).
 
 ## Best Practices
 
-1. **Schedule Time**: Run after 14:00 UTC (when 12 UTC forecasts are likely available)
+1. **Schedule Time**: Run after 14:00 UTC (when 12 UTC forecasts are likely available). If your local time is not UTC, adjust accordingly.
 2. **Monitor Logs**: Check logs weekly to ensure downloads are successful
 3. **Disk Space**: Each day generates ~7-8 MB. Plan accordingly if keeping historical data
 4. **Backup**: Consider backing up downloaded data to external storage periodically

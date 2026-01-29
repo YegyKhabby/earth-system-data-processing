@@ -59,8 +59,8 @@ DEFAULT_END_DATE = datetime.utcnow() - timedelta(days=4)
 DATA_DIR = DATA_DIR_REAL
 ARCHIVE_DIR = ARCHIVE_DIR_REAL
 
-# Setup logging
-log_dir = BASE_DIR / "logs"
+# Setup logging (centralized under data_access/logs/era5_log)
+log_dir = BASE_DIR / "logs" / "era5_log"
 log_dir.mkdir(exist_ok=True)
 log_file = log_dir / f"era5_download_{datetime.now().strftime('%Y%m%d')}.log"
 

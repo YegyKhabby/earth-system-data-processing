@@ -12,16 +12,22 @@ dependencies:
   - pyyaml
   - scipy
   - xarray
+  - cftime
   - netcdf4
   - h5netcdf
+  - dask
+  - bottleneck
+  - numexpr
 
   # Plotting and mapping
   - matplotlib
+  - jupyterlab
   - cartopy
   - shapely
   - pyproj
   - proj
   - geos
+  - rasterio
 
   # ECMWF GRIB support
   - eccodes
@@ -33,6 +39,7 @@ dependencies:
   # Utilities
   - requests
   - tqdm
+  - cdsapi
 
   # Pip-only packages (from ECMWF)
   - pip:

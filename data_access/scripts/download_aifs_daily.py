@@ -19,8 +19,9 @@ from typing import Any, Dict
 import pandas as pd
 import shutil
 
-# Set up logging
-log_dir = Path(__file__).parent / "logs"
+# Set up logging (centralized under data_access/logs/aifs_log)
+BASE_DIR = Path(__file__).resolve().parent.parent
+log_dir = BASE_DIR / "logs" / "aifs_log"
 log_dir.mkdir(exist_ok=True)
 log_file = log_dir / f"aifs_download_{datetime.now().strftime('%Y%m%d')}.log"
 

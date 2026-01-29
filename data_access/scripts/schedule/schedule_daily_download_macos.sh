@@ -7,16 +7,16 @@ set -euo pipefail
 PLIST_NAME="com.yeg.aifs-download.plist"
 LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
 
-# Project paths
-PROJECT_DIR="/Users/yeganehkhabbazian/Projects/Earth_System/earth-system-data-processing"
-DATA_ACCESS_DIR="${PROJECT_DIR}/data_access"
+# Project paths (auto-detected from this script's location)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DATA_ACCESS_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PROJECT_DIR="$(cd "${DATA_ACCESS_DIR}/.." && pwd)"
 SCRIPT_AIFS="${DATA_ACCESS_DIR}/scripts/download_aifs_daily.py"
 SCRIPT_ERA5="${DATA_ACCESS_DIR}/scripts/era5_download_only.py"
 CONFIG_PATH="${DATA_ACCESS_DIR}/aifs_config.yaml"
 
-# Conda settings (optional). If you prefer system python, set USE_CONDA="no".
-USE_CONDA="yes"
-CONDA_BASE="/Users/yeganehkhabbazian/miniconda3"
+# Conda settings (optional). Options for USE_CONDA: "auto", "yes", "no".
+USE_CONDA="auto"
 CONDA_ENV="aifs_clean"
 
 # Schedule time (24h)
@@ -24,29 +24,40 @@ SCHEDULE_HOUR=23
 SCHEDULE_MINUTE=0
 
 # Logs
-LOG_DIR="${DATA_ACCESS_DIR}/logs"
+LOG_DIR="${DATA_ACCESS_DIR}/logs/aifs_log"
 STDOUT_LOG="${LOG_DIR}/aifs_download_stdout.log"
 STDERR_LOG="${LOG_DIR}/aifs_download_stderr.log"
 
 mkdir -p "${LAUNCH_AGENTS_DIR}" "${LOG_DIR}"
 
-if [[ "${USE_CONDA}" == "yes" ]]; then
-  PY_CMD="${CONDA_BASE}/envs/${CONDA_ENV}/bin/python"
-  if [[ ! -x "${PY_CMD}" ]]; then
-    echo "Conda python not found at: ${PY_CMD}"
-    echo "Update CONDA_BASE or CONDA_ENV in this script."
+CONDA_EXE="${CONDA_EXE:-$(command -v conda || true)}"
+USE_CONDA_RESOLVED="no"
+if [[ "${USE_CONDA}" == "yes" || "${USE_CONDA}" == "auto" ]]; then
+  if [[ -n "${CONDA_EXE}" ]]; then
+    USE_CONDA_RESOLVED="yes"
+    CONDA_EXE="${CONDA_EXE}"
+  elif [[ "${USE_CONDA}" == "yes" ]]; then
+    echo "conda not found on PATH. Set CONDA_EXE or set USE_CONDA=\"no\"."
     exit 1
   fi
-else
-  PY_CMD="$(command -v python3)"
-  if [[ -z "${PY_CMD}" ]]; then
+fi
+
+PYTHON_EXE=""
+if [[ "${USE_CONDA_RESOLVED}" == "no" ]]; then
+  PYTHON_EXE="$(command -v python3)"
+  if [[ -z "${PYTHON_EXE}" ]]; then
     echo "python3 not found on PATH."
     exit 1
   fi
 fi
 
 PLIST_PATH="${LAUNCH_AGENTS_DIR}/${PLIST_NAME}"
-CMD="${PY_CMD} ${SCRIPT_AIFS} --config ${CONFIG_PATH} && ${PY_CMD} ${SCRIPT_ERA5}"
+q() { printf '%q' "$1"; }
+if [[ "${USE_CONDA_RESOLVED}" == "yes" ]]; then
+  CMD="$(q "${CONDA_EXE}") run -n $(q "${CONDA_ENV}") python $(q "${SCRIPT_AIFS}") --config $(q "${CONFIG_PATH}") && $(q "${CONDA_EXE}") run -n $(q "${CONDA_ENV}") python $(q "${SCRIPT_ERA5}")"
+else
+  CMD="$(q "${PYTHON_EXE}") $(q "${SCRIPT_AIFS}") --config $(q "${CONFIG_PATH}") && $(q "${PYTHON_EXE}") $(q "${SCRIPT_ERA5}")"
+fi
 
 cat > "${PLIST_PATH}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
