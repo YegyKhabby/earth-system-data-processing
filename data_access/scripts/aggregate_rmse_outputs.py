@@ -473,4 +473,4 @@ def _save_rmse_by_hour(se_grids, pairs, var, output_dir):
 if __name__ == '__main__':
     # This script is normally called from the notebook with function imports
     # But can also run standalone for testing
-    logger.info("compute_rmse_outputs.py loaded as module")
+    logger.info("aggregate_rmse_outputs.py loaded as module")

@@ -5,6 +5,7 @@ import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
+import cartopy.feature as cfeature
 import rasterio
 from rasterio.transform import rowcol
 from matplotlib.colors import ListedColormap
@@ -15,6 +16,7 @@ REPO_ROOT = SCRIPTS_DIR.parent.parent
 AIFS_ROOT = REPO_ROOT / 'data' / 'aifs' / 'raw'
 ERA5_ARCHIVE = REPO_ROOT / 'data' / 'era5' / 'archive' / 'real'
 RMSE_OUT = REPO_ROOT / 'data' / 'rmse_outputs'
+RESULTS_DIR = REPO_ROOT / 'results'
 KOPPEN_RASTER = REPO_ROOT / 'data' / 'static' / 'koppen_geiger_0p1.tif'
 # Fallback to available Köppen raster in repo
 _KOPPEN_ALT = REPO_ROOT / 'data' / 'static' / 'koppen_geiger_climatezones_1991_2020_1km.tif'
@@ -27,6 +29,7 @@ LSM_RASTER = REPO_ROOT / 'data' / 'static' / 'era5_land_sea_mask.nc'
 RMSE_OUT.mkdir(parents=True, exist_ok=True)
 INDEX_DIR = RMSE_OUT / 'cfgrib_index'
 INDEX_DIR.mkdir(parents=True, exist_ok=True)
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Clean stale RMSE outputs from previous runs
 def _remove_if_exists(path: Path) -> None:
@@ -46,6 +49,10 @@ for var in ['2t', 't500']:
 # Constants
 VARIABLES = ['2t', 't500']
 EUROPE_EXTENT = (-5, 25, 43, 58)  # (lon_min, lon_max, lat_min, lat_max)
+VAR_LABELS = {
+    "2t": "Temperature at 2m",
+    "t500": "Temperature at 500 hPa",
+}
 
 # Plot configuration (user-tunable)
 PLOT_CFG = {
@@ -89,7 +96,7 @@ print(f"  ERA5_ARCHIVE: {ERA5_ARCHIVE}")
 print(f"  RMSE_OUT: {RMSE_OUT}")
 # Import RMSE pipeline functions
 
-mods_to_remove = [m for m in sys.modules.keys() if 'aifs_era5_rmse' in m or 'compute_rmse_outputs' in m]
+mods_to_remove = [m for m in sys.modules.keys() if 'compute_aifs_era5_rmse' in m or 'aggregate_rmse_outputs' in m]
 for m in mods_to_remove:
     del sys.modules[m]
 
@@ -98,7 +105,7 @@ if str(SCRIPTS_DIR) in sys.path:
     sys.path.remove(str(SCRIPTS_DIR))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from aifs_era5_rmse import (
+from compute_aifs_era5_rmse import (
     index_aifs_files,
     index_era5_archive,
     filter_era5_index_by_product,
@@ -109,14 +116,14 @@ from aifs_era5_rmse import (
     VARIABLE_CONFIG,
 )
 
-from compute_rmse_outputs import compute_rmse_outputs
+from aggregate_rmse_outputs import compute_rmse_outputs
 # Run download scripts (idempotent)
 import runpy
 
 print("Running data access scripts...\n")
 for script in [
-    SCRIPTS_DIR / 'download_aifs_daily.py',
-    SCRIPTS_DIR / 'era5_download_only.py',
+    SCRIPTS_DIR / 'download_aifs_forecasts.py',
+    SCRIPTS_DIR / 'download_era5_reanalysis.py',
 ]:
     try:
         print(f"  Running {script.name}...")
@@ -325,7 +332,7 @@ def setup_map_ax(title="", extent=EUROPE_EXTENT):
     ax = plt.axes(projection=ccrs.PlateCarree())
     ax.set_extent(extent, crs=ccrs.PlateCarree())
     ax.coastlines(linewidth=0.5)
-    ax.add_feature(ccrs.cartopy.feature.BORDERS, linewidth=0.5)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.5)
     
     gl = ax.gridlines(draw_labels=True, linestyle='--', linewidth=0.3, alpha=0.5)
     gl.top_labels = False
@@ -335,163 +342,6 @@ def setup_map_ax(title="", extent=EUROPE_EXTENT):
         ax.set_title(title, fontsize=14, fontweight='bold')
     
     return fig, ax
-
-def add_koppen_background(ax, koppen_path):
-    """Overlay Köppen–Geiger climate zones (skipped if file unavailable)."""
-    if not koppen_path.exists():
-        return
-    
-    try:
-        src = rasterio.open(str(koppen_path))
-        data = src.read(1)
-        transform = src.transform
-        src.close()
-        
-        koppen_lookup = {
-            1: 'Af', 2: 'Am', 3: 'Aw', 4: 'BWh', 5: 'BWk', 6: 'BSh', 7: 'BSk',
-            8: 'Csa', 9: 'Csb', 10: 'Csc', 11: 'Cwa', 12: 'Cwb', 13: 'Cwc',
-            14: 'Cfa', 15: 'Cfb', 16: 'Cfc', 17: 'Dsa', 18: 'Dsb', 19: 'Dsc', 20: 'Dsd',
-            21: 'Dwa', 22: 'Dwb', 23: 'Dwc', 24: 'Dwd', 25: 'Dfa', 26: 'Dfb',
-            27: 'Dfc', 28: 'Dfd', 29: 'ET', 30: 'EF'
-        }
-        
-        lon_min, lon_max, lat_min, lat_max = EUROPE_EXTENT
-        row_min, col_min = rowcol(transform, lon_min, lat_max)
-        row_max, col_max = rowcol(transform, lon_max, lat_min)
-        row_min, row_max = sorted([row_min, row_max])
-        col_min, col_max = sorted([col_min, col_max])
-        data_crop = data[row_min:row_max+1, col_min:col_max+1]
-        
-        present_codes = sorted({int(c) for c in np.unique(data_crop) if int(c) in koppen_lookup})
-        if len(present_codes) > 0:
-            labels = [koppen_lookup[c] for c in present_codes]
-            colors = plt.cm.tab20.colors
-            cmap = ListedColormap([colors[i % len(colors)] for i in range(len(present_codes))])
-            code_to_index = {code: i for i, code in enumerate(present_codes)}
-            indexed = np.vectorize(lambda v: code_to_index.get(int(v), np.nan))(data_crop)
-            
-            ax.imshow(
-                indexed,
-                origin='upper',
-                extent=[lon_min, lon_max, lat_min, lat_max],
-                transform=ccrs.PlateCarree(),
-                cmap=cmap,
-                alpha=0.4,
-                zorder=1,
-            )
-    except Exception as e:
-        # Silently skip Köppen background on any error
-        pass
-
-def add_orography_overlay(ax, orog_path):
-    """Overlay ERA5 orography in grayscale."""
-    if not orog_path.exists():
-        return
-    
-    try:
-        ds = xr.open_dataset(orog_path)
-        if 'z' in ds:
-            z = ds['z'] / 9.80665  # geopotential -> meters
-            
-            # Handle multi-dimensional data by squeezing extra dimensions
-            if z.ndim > 2:
-                z = z.squeeze()
-            
-            # Select extent
-            z_crop = z.sel(
-                longitude=slice(EUROPE_EXTENT[0], EUROPE_EXTENT[1]),
-                latitude=slice(EUROPE_EXTENT[3], EUROPE_EXTENT[2])
-            )
-            
-            # Final squeeze in case selection created singleton dims
-            z_values = np.squeeze(z_crop.values)
-            
-            if z_values.ndim == 2:
-                ax.imshow(
-                    z_values,
-                    origin='upper',
-                    extent=EUROPE_EXTENT,
-                    transform=ccrs.PlateCarree(),
-                    cmap='Greys',
-                    alpha=0.15,
-                    zorder=2,
-                )
-    except Exception as e:
-        # Silently skip orography on any error
-        pass
-
-print("✓ Plotting functions defined")# Koppen & Orography loaders + preload (run once)
-from pathlib import Path
-import rasterio
-from rasterio.windows import from_bounds
-import xarray as xr
-import numpy as np
-import matplotlib.pyplot as plt
-
-
-def load_koppen_crop(koppen_path, extent):
-    """Return (indexed_image, cmap, extent_box) or (None, None, None) on error.
-    extent = (lon_min, lon_max, lat_min, lat_max)
-    """
-    if not koppen_path.exists():
-        return None, None, None
-    lon_min, lon_max, lat_min, lat_max = extent
-    try:
-        src = rasterio.open(str(koppen_path))
-        arr = src.read(1)
-        transform = src.transform
-        window = from_bounds(lon_min, lat_min, lon_max, lat_max, transform)
-        r0, c0 = int(window.row_off), int(window.col_off)
-        r1 = r0 + int(window.height)
-        c1 = c0 + int(window.width)
-        crop = arr[r0:r1, c0:c1]
-        src.close()
-
-        koppen_lookup = {
-            1: 'Af', 2: 'Am', 3: 'Aw', 4: 'BWh', 5: 'BWk', 6: 'BSh', 7: 'BSk',
-            8: 'Csa', 9: 'Csb', 10: 'Csc', 11: 'Cwa', 12: 'Cwb', 13: 'Cwc',
-            14: 'Cfa', 15: 'Cfb', 16: 'Cfc', 17: 'Dsa', 18: 'Dsb', 19: 'Dsc', 20: 'Dsd',
-            21: 'Dwa', 22: 'Dwb', 23: 'Dwc', 24: 'Dwd', 25: 'Dfa', 26: 'Dfb',
-            27: 'Dfc', 28: 'Dfd', 29: 'ET', 30: 'EF'
-        }
-
-        # Use full mapping for consistent colors across runs
-        full_codes = sorted(koppen_lookup.keys())
-        code_to_index = {code: i for i, code in enumerate(full_codes)}
-        indexed = np.full_like(crop, np.nan, dtype=float)
-        for code in full_codes:
-            indexed[crop == code] = code_to_index[code]
-
-        cmap = plt.cm.get_cmap('tab20', len(full_codes))
-        extent_box = [lon_min, lon_max, lat_min, lat_max]
-        return indexed, cmap, extent_box
-
-    except Exception as e:
-        print("Koppen load error:", e)
-        return None, None, None
-
-
-def load_orography_crop(orog_path, extent):
-    """Return (z_values_2d, vmin, vmax) or (None, None, None) on error."""
-    if not orog_path.exists():
-        return None, None, None
-    try:
-        ds = xr.open_dataset(orog_path)
-        var = 'z' if 'z' in ds else list(ds.data_vars)[0]
-        z = ds[var]
-        if var == 'z':
-            z = z / 9.80665
-        if z.ndim > 2:
-            z = z.squeeze()
-        lon_min, lon_max, lat_min, lat_max = extent
-        z_crop = z.sel(longitude=slice(lon_min, lon_max), latitude=slice(lat_max, lat_min))
-        z_values = np.squeeze(z_crop.values)
-        if z_values.ndim != 2:
-            return None, None, None
-        return z_values, np.nanmin(z_values), np.nanmax(z_values)
-    except Exception as e:
-        print("Orography load error:", e)
-        return None, None, None
 
 
 def load_lsm_crop(lsm_path, extent):
@@ -527,27 +377,13 @@ def load_lsm_crop(lsm_path, extent):
         return None, None, None
 
 
-# Preload using notebook globals (if present)
-try:
-    koppen_image, koppen_cmap, koppen_extent = load_koppen_crop(KOPPEN_RASTER, EUROPE_EXTENT)
-except Exception:
-    koppen_image, koppen_cmap, koppen_extent = (None, None, None)
-
-try:
-    orog_image, orog_vmin, orog_vmax = load_orography_crop(OROG_RASTER, EUROPE_EXTENT)
-except Exception:
-    orog_image, orog_vmin, orog_vmax = (None, None, None)
-
+# Preload LSM once (Köppen/orography are loaded once inside the Figure 1 block)
 try:
     lsm_da, lsm_lat_name, lsm_lon_name = load_lsm_crop(LSM_RASTER, EUROPE_EXTENT)
 except Exception:
     lsm_da, lsm_lat_name, lsm_lon_name = (None, None, None)
 
 print(
-    "koppen_image: "
-    f"{None if koppen_image is None else koppen_image.shape}, "
-    "orog_image: "
-    f"{None if orog_image is None else orog_image.shape}, "
     "lsm: "
     f"{None if lsm_da is None else lsm_da.shape}"
 )
@@ -559,7 +395,6 @@ print(
 import matplotlib.gridspec as gridspec
 import matplotlib.patches as mpatches
 import matplotlib.colors as mcolors
-import cartopy.feature as cfeature
 import warnings
 import time
 from rasterio.windows import from_bounds
@@ -703,9 +538,9 @@ try:
                 global_vmin = float(PLOT_CFG["rmse_vmin"])
                 global_vmax = float(PLOT_CFG["rmse_vmax"])
             else:
-                p_lo, p_hi = PLOT_CFG["rmse_pct"]
-                global_vmin = float(np.nanpercentile(all_vals, p_lo))
-                global_vmax = float(np.nanpercentile(all_vals, p_hi))
+                # True min/max across both variables for Figure 1
+                global_vmin = float(np.nanmin(all_vals))
+                global_vmax = float(np.nanmax(all_vals))
             if PLOT_CFG["rmse_norm"] == "power":
                 rmse_norm = mcolors.PowerNorm(
                     gamma=float(PLOT_CFG["rmse_gamma"]),
@@ -865,7 +700,7 @@ try:
             gl.right_labels = False
             
             # --- Title and stats ---
-            ax.set_title(f'{var} – Lead {step_val}h (RMSE dots, °C)',
+            ax.set_title(f'{VAR_LABELS.get(var, var)} – Lead {step_val}h (RMSE, °C)',
                         fontsize=12, fontweight='bold', pad=10)
             
             if valid_mask.any():
@@ -923,51 +758,18 @@ try:
             frameon=False
         )
 
-    # Add Köppen full-name mapping text at the very bottom (only present classes)
-    try:
-        koppen_items = []
-        if koppen_present_codes:
-            for code in koppen_present_codes:
-                abbrev = koppen_code_to_abbrev.get(code)
-                if not abbrev:
-                    continue
-                full_name = koppen_abbrev_to_full.get(abbrev, "Unknown")
-                koppen_items.append((code, f"■ {abbrev} – {full_name}"))
-        else:
-            koppen_items = []
-        # Split into 3 columns
-        if koppen_items:
-            cols = 3
-            rows = int(np.ceil(len(koppen_items) / cols))
-            columns = [koppen_items[i*rows:(i+1)*rows] for i in range(cols)]
-            x_positions = [0.10, 0.40, 0.70]
-            for x, col in zip(x_positions, columns):
-                y = 0.02
-                for code, line in col:
-                    fig.text(
-                        x, y,
-                        line,
-                        ha='left',
-                        va='bottom',
-                        fontsize=7,
-                        color=koppen_color_map.get(code, "#555555"),
-                    )
-                    y += 0.018
-    except Exception:
-        pass
-
     # Final touches
     date_min, date_max = fig1_date_min, fig1_date_max
 
     suptitle = (
         "RMSE Comparison – AIFS vs ERA5 over Europe\n"
-        f"Köppen background, Orography grid, RMSE dots | "
-        f"Valid dates: {date_min} to {date_max}"
+        "RMSE = root-mean-square error between AIFS forecasts and ERA5 reanalysis\n"
+        f"AIFS–ERA5 paired dates: {date_min} to {date_max}"
     )
     fig.suptitle(suptitle, fontsize=13, fontweight='bold', y=0.96)
     fig.subplots_adjust(bottom=0.36, right=0.90, top=0.86)
     
-    fig_path = '/tmp/rmse_maps_corrected.png'
+    fig_path = str(RESULTS_DIR / 'fig01_rmse_maps_europe.png')
     t_save = time.time()
     plt.savefig(fig_path, dpi=120, bbox_inches='tight')
     print(f"\n  Save: {time.time()-t_save:.2f}s")
@@ -1058,14 +860,14 @@ try:
         date_min, date_max, _ = _overall_ok_date_range(pairs_dict, VARIABLES)
         ax2.text(
             0.02, 0.98,
-            f"Valid dates: {date_min} to {date_max}\n"
-            f"Variables: {', '.join([v for v in VARIABLES if v in df_all['variable'].unique()])}\n"
+            f"AIFS–ERA5 paired dates: {date_min} to {date_max}\n"
+            f"Variables: {', '.join([VAR_LABELS.get(v, v) for v in VARIABLES if v in df_all['variable'].unique()])}\n"
             "Metric: Mean RMSE by lead step",
             transform=ax2.transAxes, va="top", fontsize=8,
             bbox=dict(boxstyle="round", facecolor="white", alpha=0.85)
         )
         fig2.tight_layout()
-        fig2_path = '/tmp/rmse_mean_vs_lead.png'
+        fig2_path = str(RESULTS_DIR / 'fig02_rmse_mean_vs_lead.png')
         fig2.savefig(fig2_path, dpi=140, bbox_inches='tight')
         print(f"✓ Figure 2 saved to: {fig2_path}")
         plt.show()
@@ -1103,9 +905,9 @@ try:
         # Figure-specific norm for better contrast at low RMSE
         all_vals = np.concatenate([v["rmse_plot"][np.isfinite(v["rmse_plot"])] for v in rmse_cache.values()])
         if all_vals.size > 0:
-            p_lo, p_hi = PLOT_CFG["rmse_pct"]
-            vmin3 = float(np.nanpercentile(all_vals, p_lo))
-            vmax3 = float(np.nanpercentile(all_vals, p_hi))
+            # True min/max across both hours for Figure 3
+            vmin3 = float(np.nanmin(all_vals))
+            vmax3 = float(np.nanmax(all_vals))
             norm3 = mcolors.PowerNorm(gamma=float(PLOT_CFG["rmse_gamma"]), vmin=vmin3, vmax=vmax3)
         else:
             vmin3, vmax3, norm3 = None, None, None
@@ -1165,7 +967,10 @@ try:
             gl.top_labels = False
             gl.right_labels = False
 
-            axh.set_title(f"2t RMSE at {hour_val:02d}:00 UTC\n(Köppen background)", fontsize=11, fontweight='bold', pad=8)
+            axh.set_title(
+                f"{VAR_LABELS.get('2t', '2t')} RMSE at {hour_val:02d}:00 UTC",
+                fontsize=11, fontweight='bold', pad=8
+            )
 
             # Per-panel stats (same style as Figure 1)
             if valid_idx.any():
@@ -1183,13 +988,10 @@ try:
         cax3 = fig3.add_axes([0.92, 0.20, 0.015, 0.60])
         fig3.colorbar(sc, cax=cax3, orientation='vertical').set_label("RMSE (°C)")
 
-        try:
-            date_min = str(aifs_index["valid_dt"].min())
-            date_max = str(aifs_index["valid_dt"].max())
-        except Exception:
-            date_min, date_max = "N/A", "N/A"
+        date_min, date_max, _ = _overall_ok_date_range(pairs_dict, VARIABLES)
         fig3.suptitle(
-            f"RMSE Dots for 2t: 06:00 vs 18:00 UTC | Valid dates: {date_min} to {date_max}",
+            f"RMSE Dots for {VAR_LABELS.get('2t', '2t')}: 06:00 vs 18:00 UTC | "
+            f"AIFS–ERA5 paired dates: {date_min} to {date_max}",
             fontsize=12, fontweight='bold', y=0.98
         )
         fig3.subplots_adjust(right=0.90, bottom=0.36, top=0.86)
@@ -1236,7 +1038,7 @@ try:
         except Exception:
             pass
 
-        fig3_path = '/tmp/rmse_koppen_2t_06_18.png'
+        fig3_path = str(RESULTS_DIR / 'fig03_rmse_2mtemp_06_18.png')
         fig3.savefig(fig3_path, dpi=140, bbox_inches='tight')
         print(f"✓ Figure 3 saved to: {fig3_path}")
         plt.show()
@@ -1274,9 +1076,9 @@ try:
         # Figure-specific norm for better contrast at low RMSE
         all_vals4 = np.concatenate([v["rmse_plot"][np.isfinite(v["rmse_plot"])] for v in rmse_cache4.values()])
         if all_vals4.size > 0:
-            p_lo, p_hi = PLOT_CFG["rmse_pct"]
-            vmin4 = float(np.nanpercentile(all_vals4, p_lo))
-            vmax4 = float(np.nanpercentile(all_vals4, p_hi))
+            # True min/max across both hours for Figure 4
+            vmin4 = float(np.nanmin(all_vals4))
+            vmax4 = float(np.nanmax(all_vals4))
             norm4 = mcolors.PowerNorm(gamma=float(PLOT_CFG["rmse_gamma"]), vmin=vmin4, vmax=vmax4)
         else:
             vmin4, vmax4, norm4 = None, None, None
@@ -1347,7 +1149,10 @@ try:
             gl.top_labels = False
             gl.right_labels = False
 
-            axh.set_title(f"2t RMSE at {hour_val:02d}:00 UTC\n(Orography background)", fontsize=11, fontweight='bold', pad=8)
+            axh.set_title(
+                f"{VAR_LABELS.get('2t', '2t')} RMSE at {hour_val:02d}:00 UTC",
+                fontsize=11, fontweight='bold', pad=8
+            )
 
             # Per-panel stats (same style as Figure 1)
             if valid_idx.any():
@@ -1365,13 +1170,10 @@ try:
         cax4 = fig4.add_axes([0.92, 0.20, 0.015, 0.60])
         fig4.colorbar(sc4, cax=cax4, orientation='vertical').set_label("RMSE (°C)")
 
-        try:
-            date_min = str(aifs_index["valid_dt"].min())
-            date_max = str(aifs_index["valid_dt"].max())
-        except Exception:
-            date_min, date_max = "N/A", "N/A"
+        date_min, date_max, _ = _overall_ok_date_range(pairs_dict, VARIABLES)
         fig4.suptitle(
-            f"RMSE Dots for 2t: 00:00 vs 12:00 UTC | Valid dates: {date_min} to {date_max}",
+            f"RMSE Dots for {VAR_LABELS.get('2t', '2t')}: 00:00 vs 12:00 UTC | "
+            f"AIFS–ERA5 paired dates: {date_min} to {date_max}",
             fontsize=12, fontweight='bold', y=0.98
         )
         fig4.subplots_adjust(right=0.90, bottom=0.36, top=0.86)
@@ -1393,7 +1195,7 @@ try:
             except Exception:
                 pass
 
-        fig4_path = '/tmp/rmse_orog_2t_00_12.png'
+        fig4_path = str(RESULTS_DIR / 'fig04_rmse_2mtemp_00_12.png')
         fig4.savefig(fig4_path, dpi=140, bbox_inches='tight')
         print(f"✓ Figure 4 saved to: {fig4_path}")
         plt.show()
@@ -1452,14 +1254,14 @@ try:
                 capprops=dict(color="black"),
                 showfliers=False,
             )
-            ax.set_title(f"{var_key} RMSE Distribution by Lead Time", fontsize=11, fontweight='bold')
+            ax.set_title(f"{VAR_LABELS.get(var_key, var_key)} RMSE Distribution by Lead Time", fontsize=11, fontweight='bold')
             ax.set_xlabel("Lead time (hours)")
             ax.set_ylabel("RMSE (°C)")
             ax.set_xticks(steps)
             ax.grid(True, linestyle='--', alpha=0.3)
 
         fig5.tight_layout()
-        fig5_path = '/tmp/rmse_distribution_by_step.png'
+        fig5_path = str(RESULTS_DIR / 'fig05_rmse_by_leadtime.png')
         fig5.savefig(fig5_path, dpi=140, bbox_inches='tight')
         print(f"✓ Figure 5 saved to: {fig5_path}")
         plt.show()
@@ -1544,21 +1346,20 @@ try:
             zorder=0,
         )
 
-        # RMSE dots over land/sea (coarsen for visual consistency with other plots)
-        rmse_step_coarse = _maybe_coarsen(rmse_step, lat_name, lon_name, PLOT_CFG["rmse_coarsen_factor"])
-        rmse_vals = np.asarray(rmse_step_coarse.values)
+        # RMSE dots over land/sea: keep native grid to match land/sea boxplots
+        # (no coarsening here to avoid mismatched classification vs plotted values)
+        rmse_vals = np.asarray(rmse_step.values)
         lon_grid, lat_grid = np.meshgrid(
-            rmse_step_coarse[lon_name].values,
-            rmse_step_coarse[lat_name].values
+            rmse_step[lon_name].values,
+            rmse_step[lat_name].values
         )
         rmse_scatter = rmse_vals.ravel()
         lon_scatter = lon_grid.ravel()
         lat_scatter = lat_grid.ravel()
         ok = ~np.isnan(rmse_scatter)
 
-        p_lo, p_hi = PLOT_CFG["rmse_pct"]
-        vmin6 = float(np.nanpercentile(rmse_vals, p_lo)) if PLOT_CFG["rmse_vmin"] is None else float(PLOT_CFG["rmse_vmin"])
-        vmax6 = float(np.nanpercentile(rmse_vals, p_hi)) if PLOT_CFG["rmse_vmax"] is None else float(PLOT_CFG["rmse_vmax"])
+        vmin6 = float(np.nanmin(rmse_vals)) if PLOT_CFG["rmse_vmin"] is None else float(PLOT_CFG["rmse_vmin"])
+        vmax6 = float(np.nanmax(rmse_vals)) if PLOT_CFG["rmse_vmax"] is None else float(PLOT_CFG["rmse_vmax"])
         if PLOT_CFG["rmse_norm"] == "power":
             norm6 = mcolors.PowerNorm(gamma=float(PLOT_CFG["rmse_gamma"]), vmin=vmin6, vmax=vmax6)
         else:
@@ -1596,6 +1397,7 @@ try:
         )
 
         # Distribution plot (land vs sea)
+        # Note: boxplots use IQR whiskers (and hide outliers), while the colorbar shows true min/max.
         data = [sea_rmse, land_rmse]
         labels = ["Sea", "Land"]
         ax6_dist.boxplot(
@@ -1633,7 +1435,7 @@ try:
         cax6 = fig6.add_axes([0.92, 0.20, 0.015, 0.60])
         fig6.colorbar(sc6, cax=cax6, orientation="vertical").set_label("RMSE (°C)")
 
-        fig6_path = "/tmp/rmse_land_sea_distribution.png"
+        fig6_path = str(RESULTS_DIR / 'fig06_rmse_land_sea.png')
         fig6.savefig(fig6_path, dpi=140, bbox_inches="tight")
         print(f"✓ Figure 6 saved to: {fig6_path}")
         plt.show()

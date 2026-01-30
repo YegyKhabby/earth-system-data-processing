@@ -110,7 +110,7 @@ def index_aifs_files(aifs_root: Path) -> pd.DataFrame:
 def _infer_era5_product_tag(path: Path) -> str:
     """Infer a product tag from filename (e.g., 't2m' or 't_pl500')."""
     name = path.name
-    # Common patterns from era5_download_only.py output
+    # Common patterns from download_era5_reanalysis.py output
     if "2m_temperature" in name:
         return "t2m"
     if "temperature" in name and "pl" in name:

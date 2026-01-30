@@ -127,7 +127,7 @@ def compare_grids(
 
     if align_after_roll:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from aifs_era5_rmse import align_aifs_lon_to_era5  # type: ignore
+        from compute_aifs_era5_rmse import align_aifs_lon_to_era5  # type: ignore
 
         ds_aifs = align_aifs_lon_to_era5(ds_aifs, ds_era5)
 

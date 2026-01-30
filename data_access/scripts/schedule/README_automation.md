@@ -5,10 +5,10 @@ This guide explains how to automate daily AIFS downloads and where to find AIFS/
 ## Overview
 
 The automation consists of:
-- **`scripts/download_aifs_daily.py`**: Python script driven by `aifs_config.yaml`
+- **`scripts/download_aifs_forecasts.py`**: Python script driven by `aifs_config.yaml`
 - **`aifs_config.yaml`**: Configuration for dates, steps, variables, output paths, and retries
-- **`scripts/schedule/schedule_daily_download.ps1`**: PowerShell script to set up Windows Task Scheduler
-- **`scripts/schedule/schedule_daily_download_macos.sh`**: macOS LaunchAgent helper
+- **`scripts/schedule/schedule_aifs_daily.ps1`**: PowerShell script to set up Windows Task Scheduler
+- **`scripts/schedule/schedule_aifs_daily_macos.sh`**: macOS LaunchAgent helper
 - **`logs/aifs_log/`**: AIFS download logs (created automatically)
 - **`logs/era5_log/`**: ERA5 download logs (created automatically)
 
@@ -26,7 +26,7 @@ The automation consists of:
 
 3. **Run the scheduling script**
    ```powershell
-   .\scripts/schedule/schedule_daily_download.ps1
+   .\scripts/schedule/schedule_aifs_daily.ps1
    ```
 
 4. **Verify the task was created**
@@ -42,8 +42,8 @@ This does not affect Windows users. It installs a per-user LaunchAgent on macOS 
 
 1. **Create the LaunchAgent (macOS)**
    ```bash
-   chmod +x scripts/schedule/schedule_daily_download_macos.sh
-   scripts/schedule/schedule_daily_download_macos.sh
+   chmod +x scripts/schedule/schedule_aifs_daily_macos.sh
+   scripts/schedule/schedule_aifs_daily_macos.sh
    ```
 
 2. **Load the agent**
@@ -58,7 +58,7 @@ This does not affect Windows users. It installs a per-user LaunchAgent on macOS 
    ```
 
 The macOS script lives at:
-- **`scripts/schedule/schedule_daily_download_macos.sh`**
+- **`scripts/schedule/schedule_aifs_daily_macos.sh`**
 
 The script is portable: it auto-detects the project root based on its own location.
 You only need to set:
@@ -71,14 +71,14 @@ You only need to set:
 You can run the download script manually anytime:
 
 ```bash
-python data_access/scripts/download_aifs_daily.py --config data_access/aifs_config.yaml
+python data_access/scripts/download_aifs_forecasts.py --config data_access/aifs_config.yaml
 ```
 
 ## Configuration
 
 ### Change Schedule Time
 
-Edit line 12 in [scripts/schedule/schedule_daily_download.ps1](scripts/schedule/schedule_daily_download.ps1):
+Edit line 12 in [scripts/schedule/schedule_aifs_daily.ps1](scripts/schedule/schedule_aifs_daily.ps1):
 
 ```powershell
 $ScheduleTime = "23:00"
@@ -191,7 +191,7 @@ $PythonPath = "C:\Users\YourName\anaconda3\envs\aifs\python.exe"
 **Solution**: Create an alternative scheduling script:
 
 ```powershell
-# In scripts/schedule/schedule_daily_download.ps1, replace the Action creation with:
+# In scripts/schedule/schedule_aifs_daily.ps1, replace the Action creation with:
 $CondaPath = "C:\Users\YourName\anaconda3\Scripts\conda.exe"
 $Action = New-ScheduledTaskAction `
     -Execute $CondaPath `

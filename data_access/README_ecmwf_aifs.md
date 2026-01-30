@@ -47,14 +47,14 @@ The environment includes `earthkit-data` (ECMWF Open Data client), `xarray`/`cfg
 The automated downloader uses a YAML config file:
 
 ```bash
-python data_access/scripts/download_aifs_daily.py --config data_access/aifs_config.yaml
+python data_access/scripts/download_aifs_forecasts.py --config data_access/aifs_config.yaml
 ```
 
 **macOS note (TMPDIR):** If you see a temp directory error, run with a writable temp path:
 
 ```bash
 mkdir -p /Users/yeganehkhabbazian/Projects/tmp
-TMPDIR=/Users/yeganehkhabbazian/Projects/tmp python data_access/scripts/download_aifs_daily.py --config data_access/aifs_config.yaml
+TMPDIR=/Users/yeganehkhabbazian/Projects/tmp python data_access/scripts/download_aifs_forecasts.py --config data_access/aifs_config.yaml
 ```
 
 Key config settings live in `data_access/aifs_config.yaml` (episode length, init hours, steps, variables, output folder, retries, etc.).  

@@ -11,8 +11,8 @@ LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_ACCESS_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PROJECT_DIR="$(cd "${DATA_ACCESS_DIR}/.." && pwd)"
-SCRIPT_AIFS="${DATA_ACCESS_DIR}/scripts/download_aifs_daily.py"
-SCRIPT_ERA5="${DATA_ACCESS_DIR}/scripts/era5_download_only.py"
+SCRIPT_AIFS="${DATA_ACCESS_DIR}/scripts/download_aifs_forecasts.py"
+SCRIPT_ERA5="${DATA_ACCESS_DIR}/scripts/download_era5_reanalysis.py"
 CONFIG_PATH="${DATA_ACCESS_DIR}/aifs_config.yaml"
 
 # Conda settings (optional). Options for USE_CONDA: "auto", "yes", "no".

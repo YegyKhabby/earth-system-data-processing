@@ -3,8 +3,8 @@
 
 # Configuration
 $TaskName = "ECMWF_AIFS_Daily_Download"
-$ScriptPath = Join-Path $PSScriptRoot "..\download_aifs_daily.py"
-$Era5ScriptPath = Join-Path $PSScriptRoot "..\era5_download_only.py"
+$ScriptPath = Join-Path $PSScriptRoot "..\download_aifs_forecasts.py"
+$Era5ScriptPath = Join-Path $PSScriptRoot "..\download_era5_reanalysis.py"
 $CondaPath = "C:\Users\90542\miniconda3\Scripts\conda.exe"
 $CondaEnv = "aifs_clean"
 $WorkingDir = (Resolve-Path (Join-Path $PSScriptRoot "..\.."))

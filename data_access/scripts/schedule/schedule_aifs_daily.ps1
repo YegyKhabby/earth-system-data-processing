@@ -3,8 +3,8 @@
 
 # Configuration
 $TaskName = "ECMWF_AIFS_Daily_Download"
-$ScriptPath = Join-Path $PSScriptRoot "..\download_aifs_daily.py"
-$Era5ScriptPath = Join-Path $PSScriptRoot "..\era5_download_only.py"
+$ScriptPath = Join-Path $PSScriptRoot "..\download_aifs_forecasts.py"
+$Era5ScriptPath = Join-Path $PSScriptRoot "..\download_era5_reanalysis.py"
 $PythonPath = (Get-Command python).Source  # Automatically finds Python
 $WorkingDir = (Resolve-Path (Join-Path $PSScriptRoot "..\.."))
 
