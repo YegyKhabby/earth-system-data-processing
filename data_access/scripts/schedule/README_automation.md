@@ -105,6 +105,28 @@ Available parameters:
 Get-ScheduledTask -TaskName "ECMWF_AIFS_Daily_Download" | Format-List
 ```
 
+### Disable or stop automatic downloads
+
+**Windows (disable without deleting):**
+```powershell
+Disable-ScheduledTask -TaskName "ECMWF_AIFS_Daily_Download"
+```
+
+**Windows (remove completely):**
+```powershell
+Unregister-ScheduledTask -TaskName "ECMWF_AIFS_Daily_Download" -Confirm:$false
+```
+
+**macOS (unload LaunchAgent):**
+```bash
+launchctl unload ~/Library/LaunchAgents/com.yeg.aifs-download.plist
+```
+
+**macOS (remove LaunchAgent file):**
+```bash
+rm ~/Library/LaunchAgents/com.yeg.aifs-download.plist
+```
+
 ### Run task immediately (for testing, Windows)
 ```powershell
 Start-ScheduledTask -TaskName "ECMWF_AIFS_Daily_Download"

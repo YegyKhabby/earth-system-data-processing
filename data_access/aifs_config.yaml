@@ -1,44 +1,90 @@
 aifs:
+  # === DATA SOURCE (do not change) ===
   source: ecmwf-open-data
   model: aifs-single
 
-  # Initialization times to compare day vs night
+  # === INITIALIZATION TIMES ===
+  # When AIFS forecasts are generated (UTC hour)
+  # [0, 12] downloads both 00 UTC and 12 UTC forecasts—useful to compare day vs night skill
+  # Change to [0] (00 UTC only) or [12] (12 UTC only) to reduce data volume
   init_hours_utc: [0, 12]
 
-  # Episode (last 4 days: today and 3 days before)
+  # === DOWNLOAD WINDOW ===
   episode:
+    # How many days of history to download (including today if include_today=true)
+    # Default 4 = last 3 days + today
+    # Examples: days: 7 (1 week), days: 30 (1 month)
     days: 4
+    
+    # Include today's incomplete forecasts (may be missing latest steps)
+    # Set false to download only complete historical days
     include_today: true
 
-  # Forecast lead times (keep moderate)
+  # === FORECAST LEAD TIMES (hours) ===
+  # Which forecast steps to download (6h, 12h, 24h, etc.)
+  # Longer lead times = lower skill but more data
+  # Default [6, 12, 18, 24, 36, 48] is balanced for short-range skill study
+  # For extended range: add 60, 72, 84, 90, 96, 120, 144, 168
+  # For quick testing: use [6, 12, 24]
   steps_hours: [6, 12, 18, 24, 36, 48]
 
-  # Surface variables (core)
+  # === SURFACE VARIABLES (2D fields) ===
   sfc_params:
-    - 2t        # 2 m temperature (core)
-    - msl       # mean sea level pressure (optional)
-    - 10u       # optional
-    - 10v       # optional
+    - 2t        # 2m air temperature (core, always download)
+    - msl       # Mean sea level pressure (optional, ~1 MB per forecast)
+    - 10u       # 10m wind U component (optional, increases download by ~2-3%)
+    - 10v       # 10m wind V component (paired with 10u)
+  # Other available: 10fg (gust), skt (skin temperature), tp (total precipitation), etc.
+  # See: https://codes.ecmwf.int/grib/param-db/
 
-  # Pressure-level variables (strictly limited)
+  # === PRESSURE-LEVEL VARIABLES ===
+  # Variables at specific altitude levels; use with pl_levels below
   pl_params:
-    - t
+    - t        # Temperature at pressure levels (core for upper-air skill)
+  # Other available: u, v (wind), gh (geopotential height), q (humidity), etc.
+  
+  # Pressure levels (hPa) for the above variables
+  # Default [500] covers mid-troposphere (~5.5 km)
+  # For more detail:
+  #   - Add 250 for upper troposphere (~10 km)
+  #   - Add 850, 925 for lower troposphere (~1.5-2 km)
+  #   - Use [200, 250, 500, 700, 850] for comprehensive profile (increases data ~3-4x)
+  # WARNING: each level doubles the download size roughly
   pl_levels:
-    - 500       # ONLY 500 hPa
+    - 500
 
+  # Level types (do not change unless you know what you're doing)
   levtypes:
-    - sfc
-    - pl
+    - sfc      # Surface (2D) fields
+    - pl       # Pressure level (3D) fields
 
-  # Region handling
-  region: global        # download global (use N,W,S,E to subset)
-  #crop_in_analysis: true  # subset to Europe later (not used in download)
-         # AIFS subsetting via area not guaranteed; crop later
+  # === REGION ===
+  # "global" = full 0.25° global grid (~0.5-1 GB per day)
+  # For spatial subset, use CLI: --area "N,W,S,E" (e.g., --area "56,0,44,20" for Europe)
+  # Subsetting via config not recommended; use CLI for flexibility
+  region: global
 
-
+  # Output directory (relative to project root)
   out_dir: data/aifs/raw
 
-  # Robustness
+  # === ROBUSTNESS & LIMITS ===
+  # Re-download existing files? (typically false to save bandwidth)
+  # Set true if files are corrupted or incomplete
   overwrite: false
+  
+  # Number of retries on transient failures (network errors, timeouts)
+  # Does NOT retry on 404 (file not found) or 401 (auth error)
+  # Default 5 is conservative; increase to 10 for unreliable networks
   max_retries: 5
+  
+  # Base wait time between retries (seconds)
+  # Actual backoff: 10s, 20s, 30s, ... (linear, up to max_retries)
+  # For HTTP 429 (rate limit), increase this to 30-60s
   backoff_seconds: 10
+  
+  # Storage safety cap (GB)
+  # If AIFS + ERA5 combined exceed this, downloads stop automatically
+  # Prevents scheduler from filling disk with weeks of data
+  # Default 1.0 GB is conservative; adjust based on your disk space
+  # Set to 0 to disable (not recommended for automated runs)
+  max_total_gb: 1.0

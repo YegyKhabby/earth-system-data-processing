@@ -71,6 +71,97 @@ logging.basicConfig(
 )
 logger = logging.getLogger("era5_download")
 
+# Hard stop if total downloaded AIFS+ERA5 exceeds this threshold
+MAX_TOTAL_GB = 1.0
+STOP_MARKER = BASE_DIR / "data_access" / "STOP_DOWNLOADS_1GB"
+DATA_ROOT = BASE_DIR / "data"
+AIFS_DATA_DIR = DATA_ROOT / "aifs"
+ERA5_DATA_DIR = DATA_ROOT / "era5"
+
+
+def _dir_size_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    total = 0
+    for p in path.rglob("*"):
+        if p.is_file():
+            try:
+                total += p.stat().st_size
+            except Exception:
+                continue
+    return total
+
+
+def _check_total_size_limit(max_total_gb: float | None = None) -> bool:
+    """Return True if downloads should stop (limit exceeded or marker present)."""
+    if max_total_gb is not None:
+        global MAX_TOTAL_GB, STOP_MARKER
+        MAX_TOTAL_GB = float(max_total_gb)
+        STOP_MARKER = BASE_DIR / "data_access" / f"STOP_DOWNLOADS_{MAX_TOTAL_GB:.1f}GB"
+    if STOP_MARKER.exists():
+        logger.warning(f"Stop marker present ({STOP_MARKER}). Skipping downloads.")
+        return True
+    total_bytes = _dir_size_bytes(AIFS_DATA_DIR) + _dir_size_bytes(ERA5_DATA_DIR)
+    total_gb = total_bytes / (1024 ** 3)
+    if total_gb >= MAX_TOTAL_GB:
+        msg = (
+            f"Total data size is {total_gb:.2f} GB (limit {MAX_TOTAL_GB:.2f} GB). "
+            "Creating stop marker and skipping downloads."
+        )
+        logger.warning(msg)
+        STOP_MARKER.write_text(msg + "\n", encoding="utf-8")
+        return True
+    return False
+
+
+def _load_era5_config() -> dict:
+    cfg_path = BASE_DIR / "data_access" / "era5_config.yaml"
+    if not cfg_path.exists():
+        return {}
+    try:
+        import yaml  # type: ignore
+    except Exception:
+        logger.warning("PyYAML not available - era5_config.yaml will be ignored")
+        return {}
+    try:
+        with cfg_path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if isinstance(data, dict):
+            return data.get("era5", {}) if isinstance(data.get("era5", {}), dict) else {}
+    except Exception as e:
+        logger.warning(f"Failed to read era5_config.yaml: {e}")
+    return {}
+
+
+def _apply_era5_yaml_config(cfg: dict) -> None:
+    """Apply era5_config.yaml values to module-level defaults."""
+    global MOCK_MODE, ERA5_COMMON, ERA5_TASKS, DEFAULT_START_DATE, DEFAULT_END_DATE
+    if not cfg:
+        return
+    if "mock_mode" in cfg:
+        MOCK_MODE = bool(cfg["mock_mode"])
+    if "times" in cfg and cfg["times"] is not None:
+        ERA5_COMMON["times"] = list(cfg["times"])
+    if "format" in cfg and cfg["format"] is not None:
+        ERA5_COMMON["format"] = cfg["format"]
+    if "grid" in cfg:
+        ERA5_COMMON["grid"] = cfg["grid"]
+    if "tasks" in cfg and isinstance(cfg["tasks"], list) and cfg["tasks"]:
+        ERA5_TASKS = cfg["tasks"]
+    if "default_start_date" in cfg and cfg["default_start_date"]:
+        try:
+            DEFAULT_START_DATE = datetime.strptime(cfg["default_start_date"], "%Y-%m-%d")
+        except Exception:
+            pass
+    if "default_end_date" in cfg and cfg["default_end_date"]:
+        if str(cfg["default_end_date"]) == "auto_minus_4_days":
+            DEFAULT_END_DATE = datetime.utcnow() - timedelta(days=4)
+        else:
+            try:
+                DEFAULT_END_DATE = datetime.strptime(cfg["default_end_date"], "%Y-%m-%d")
+            except Exception:
+                pass
+
 # Optional dependencies
 try:
     import xarray as xr  # type: ignore
@@ -551,11 +642,43 @@ def _write_manifest(rows: list[dict], output_dir: Path) -> None:
     logger.info(f"Manifest written: {manifest_path}")
 
 
+def _load_max_total_gb_from_aifs_config() -> float | None:
+    cfg_path = BASE_DIR / "data_access" / "aifs_config.yaml"
+    if not cfg_path.exists():
+        return None
+    try:
+        import yaml  # type: ignore
+    except Exception:
+        return None
+    try:
+        with cfg_path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if isinstance(data, dict):
+            aifs_cfg = data.get("aifs", {}) if isinstance(data.get("aifs", {}), dict) else {}
+            val = aifs_cfg.get("max_total_gb")
+            if val is None:
+                return None
+            return float(val)
+    except Exception:
+        return None
+    return None
+
+
 def main() -> int:
     parser = build_arg_parser()
     args = parser.parse_args()
 
-    configure_runtime(args.mock)
+    era5_cfg = _load_era5_config()
+    _apply_era5_yaml_config(era5_cfg)
+
+    configure_runtime(args.mock if args.mock else MOCK_MODE)
+    max_total_gb = None
+    if isinstance(era5_cfg, dict) and era5_cfg.get("max_total_gb") is not None:
+        max_total_gb = float(era5_cfg.get("max_total_gb"))
+    if max_total_gb is None:
+        max_total_gb = _load_max_total_gb_from_aifs_config()
+    if _check_total_size_limit(max_total_gb):
+        return 0
     try:
         _apply_cli_config(args)
     except Exception as e:
@@ -566,11 +689,23 @@ def main() -> int:
         logger.error("end_date must be >= start_date")
         return 2
 
+    # Use YAML defaults when CLI is not provided
+    single_date = args.single_date
+    start_date = args.start_date
+    end_date = args.end_date
+    if era5_cfg:
+        if single_date is None and era5_cfg.get("single_date"):
+            single_date = _parse_date(str(era5_cfg.get("single_date")))
+        if start_date is None and era5_cfg.get("start_date"):
+            start_date = _parse_date(str(era5_cfg.get("start_date")))
+        if end_date is None and era5_cfg.get("end_date"):
+            end_date = _parse_date(str(era5_cfg.get("end_date")))
+
     results = run_era5_pipeline(
-        single_date=args.single_date,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        mock=args.mock,
+        single_date=single_date,
+        start_date=start_date,
+        end_date=end_date,
+        mock=args.mock if args.mock else MOCK_MODE,
         skip_if_complete=not args.no_skip,
     )
     return 0 if results.get("failed", 0) == 0 else 1

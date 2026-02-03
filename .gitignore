@@ -264,3 +264,4 @@ zarr_data/
 zarr_data/*
 
 data/static/koppen*.tif
+data_access/scripts/analyze_rmse_outputs.py

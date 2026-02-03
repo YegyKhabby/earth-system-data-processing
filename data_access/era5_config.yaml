@@ -1,0 +1,67 @@
+era5:
+  # === DOWNLOAD MODE ===
+  # Set to false for production (real ERA5 data)
+  # Set to true for testing (mock/dummy downloads to avoid storage/quota issues)
+  mock_mode: false
+
+  # === REQUEST FORMAT & GRID ===
+  # Times to download (UTC hours); ERA5 provides hourly data; 6-hourly subset is typical
+  # Examples:
+  #   - ["00:00", "06:00", "12:00", "18:00"] = 6-hourly (4 times per day)
+  #   - ["00:00", "12:00"] = 2x daily (day/night)
+  #   - null or omit = all 24 hours
+  times: ["00:00", "06:00", "12:00", "18:00"]
+  
+  # Output format: "netcdf" (default, recommended for xarray) or "grib"
+  format: netcdf
+  
+  # Spatial resolution regridding (null = native resolution)
+  # Examples: "1.0" = 1° regular lat/lon grid, null = native ~0.25°
+  # Note: coarser grids reduce file size but lose detail; recommended: null (native)
+  grid: null
+
+  # === DATE SELECTION ===
+  # Three mutually-exclusive modes (use one, others must be null):
+  
+  # Mode 1: Single date
+  single_date: null          # Example: "2026-01-15"
+  
+  # Mode 2: Date range (if both start_date and end_date are provided)
+  start_date: null           # Example: "2026-01-01"
+  end_date: null             # Example: "2026-01-31"
+  
+  # Mode 3: Default range (used if modes 1 & 2 are null)
+  # Fallback start: usually today minus N days, or a fixed date
+  default_start_date: "2026-01-19"
+  
+  # Fallback end: "auto_minus_4_days" computes (today - 4 days)
+  # Set to "auto" for today, or specific date like "2026-01-23"
+  default_end_date: "auto_minus_4_days"
+
+  # === DOWNLOAD TASKS (which variables/levels) ===
+  # Each task downloads a specific variable at specific pressure levels
+  # Task names (t2m, t500) are labels for organizing outputs and logs
+  tasks:
+    # Task 1: 2m temperature (surface-only variable)
+    # Used to pair with AIFS 2m temperature for skill comparison
+    - name: t2m
+      variable: 2m_temperature         # ECMWF parameter name (single-level only)
+      pressure_levels: []              # Empty = not applicable (2m is surface-only)
+      single_level: true               # true = variable exists only at surface
+    
+    # Task 2: Temperature at 500 hPa (pressure-level variable)
+    # Used to pair with AIFS 500 hPa temperature for upper-air skill comparison
+    - name: t500
+      variable: temperature            # ECMWF parameter name (available at multiple levels)
+      pressure_levels: ["500"]         # Download only 500 hPa; add more: ["250", "500", "850", "925"]
+      single_level: false              # false = variable exists at pressure levels
+
+  # === STORAGE SAFETY CAP ===
+  # If combined AIFS + ERA5 downloads exceed this limit (GB), stop automatically
+  # Prevents scheduler from accidentally filling disk with weeks of data
+  # Recommended values:
+  #   - 1.0 GB (default, conservative)
+  #   - 5.0 GB (1–2 weeks of continuous daily downloads)
+  #   - 10.0+ GB (1 month or longer)
+  # Set to 0 to disable (not recommended for automated runs)
+  max_total_gb: 1.0

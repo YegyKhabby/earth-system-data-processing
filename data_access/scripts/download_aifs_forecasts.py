@@ -39,6 +39,48 @@ logger = logging.getLogger(__name__)
 # Disable ECMWF index usage for better compatibility
 os.environ["ECMWF_OD_USE_INDEX"] = "0"
 
+# Hard stop if total downloaded AIFS+ERA5 exceeds this threshold
+MAX_TOTAL_GB = 1.0
+STOP_MARKER = BASE_DIR / "STOP_DOWNLOADS_1GB"
+DATA_ROOT = BASE_DIR.parent / "data"
+AIFS_DATA_DIR = DATA_ROOT / "aifs"
+ERA5_DATA_DIR = DATA_ROOT / "era5"
+
+
+def _dir_size_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    total = 0
+    for p in path.rglob("*"):
+        if p.is_file():
+            try:
+                total += p.stat().st_size
+            except Exception:
+                continue
+    return total
+
+
+def _check_total_size_limit(max_total_gb: float | None = None) -> bool:
+    """Return True if downloads should stop (limit exceeded or marker present)."""
+    if max_total_gb is not None:
+        global MAX_TOTAL_GB, STOP_MARKER
+        MAX_TOTAL_GB = float(max_total_gb)
+        STOP_MARKER = BASE_DIR / f"STOP_DOWNLOADS_{MAX_TOTAL_GB:.1f}GB"
+    if STOP_MARKER.exists():
+        logger.warning(f"Stop marker present ({STOP_MARKER}). Skipping downloads.")
+        return True
+    total_bytes = _dir_size_bytes(AIFS_DATA_DIR) + _dir_size_bytes(ERA5_DATA_DIR)
+    total_gb = total_bytes / (1024 ** 3)
+    if total_gb >= MAX_TOTAL_GB:
+        msg = (
+            f"Total data size is {total_gb:.2f} GB (limit {MAX_TOTAL_GB:.2f} GB). "
+            "Creating stop marker and skipping downloads."
+        )
+        logger.warning(msg)
+        STOP_MARKER.write_text(msg + "\n", encoding="utf-8")
+        return True
+    return False
+
 
 def get_last_n_days(n_days: int, include_today: bool = False):
     """Generate list of last N complete days (optionally include today)."""
@@ -140,6 +182,9 @@ def download_aifs_data(cfg, dry_run: bool = False, overwrite: bool = False, retr
     logger.info("=" * 60)
     logger.info("Starting AIFS data download")
     logger.info("=" * 60)
+
+    if _check_total_size_limit(cfg.get("max_total_gb")):
+        return 0, 0
 
     # Create output directory (resolve relative to project root)
     base_dir = Path(__file__).resolve().parent.parent.parent
@@ -470,6 +515,7 @@ if __name__ == "__main__":
         "sfc_max_mb": float(cfg_aifs.get("sfc_max_mb", 5.0)),
         "pl_min_mb": float(cfg_aifs.get("pl_min_mb", 0.2)),
         "pl_max_mb": float(cfg_aifs.get("pl_max_mb", 1.5)),
+        "max_total_gb": float(cfg_aifs.get("max_total_gb", 1.0)),
     }
     region = cfg_aifs.get("region")
     if region and region != "global" and not args.area:
