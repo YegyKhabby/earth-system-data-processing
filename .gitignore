@@ -46,6 +46,9 @@ plots/
 *.nc
 *.csv
 
+# --- Local helper scripts ---
+data_access/scripts/verify/inspect_rmse_nc_headers.py
+
 *.pdf
 *.log
 *.zip
