@@ -162,9 +162,9 @@ def filter_aifs_index_by_levtype(aifs_index_df: pd.DataFrame, levtype: str) -> p
     return aifs_index_df[aifs_index_df["levtype"] == levtype].reset_index(drop=True)
 
 
-def _era5_has_time(era5_path: Path, hour: int) -> bool:
+def _era5_hours(era5_path: Path) -> set[int]:
     if not _HAS_XARRAY:
-        return True
+        return set()
 
     try:
         with xr.open_dataset(era5_path) as ds:
@@ -175,12 +175,12 @@ def _era5_has_time(era5_path: Path, hour: int) -> bool:
             elif "valid_time" in ds:
                 time_coord = ds["valid_time"]
             else:
-                return False
-            
+                return set()
+
             hours = pd.to_datetime(time_coord.values).hour
-            return int(hour) in set(int(h) for h in hours)
+            return set(int(h) for h in hours)
     except Exception:
-        return False
+        return set()
 
 
 def pair_aifs_with_era5(aifs_index_df: pd.DataFrame, era5_index_df: pd.DataFrame, verify_era5_times: bool = True) -> pd.DataFrame:
@@ -188,6 +188,7 @@ def pair_aifs_with_era5(aifs_index_df: pd.DataFrame, era5_index_df: pd.DataFrame
     era5_map = {row["date"]: row["path"] for _, row in era5_index_df.iterrows()}
 
     rows = []
+    hours_cache: dict[str, set[int]] = {}
     for _, row in aifs_index_df.iterrows():
         init_dt = row["init_dt"]
         step_hours = row["step_hours"]
@@ -223,7 +224,9 @@ def pair_aifs_with_era5(aifs_index_df: pd.DataFrame, era5_index_df: pd.DataFrame
 
         status = "ok"
         if verify_era5_times:
-            if not _era5_has_time(Path(era5_path), valid_dt.hour):
+            if era5_path not in hours_cache:
+                hours_cache[era5_path] = _era5_hours(Path(era5_path))
+            if int(valid_dt.hour) not in hours_cache[era5_path]:
                 status = "time_not_found"
 
         rows.append(
