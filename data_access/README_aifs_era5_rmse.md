@@ -1,8 +1,6 @@
 # AIFS vs ERA5 RMSE Comparison Pipeline
 
 **Author:** Yeganeh Khabbazian  
-**Course:** Earth System Data Processing, University of Cologne, Winter Semester 2025/26  
-**Instructor:** Martin Schultz, Jülich Supercomputing Centre & University of Cologne  
 **Tool:** Used GitHub Copilot
 
 ---
@@ -436,7 +434,7 @@ This project uses Open Data to stay within the retention window.
 
 **Notebook execution** is now fast because it loads pre-computed RMSE from NetCDF files instead of recomputing per pair. See "Completed Optimizations" below. 
 
-### Main Bottleneck: Per-Pair File I/O
+### Main Bottleneck: Per-Pair File I/O (During Computation)
 
 Each pair is processed independently in a loop (in compute_rmse_outputs.py):
 
@@ -447,10 +445,13 @@ for idx, row in pairs.iterrows():
 **Impact:** 
 - 100 pairs → 200 file opens (100 AIFS + 100 ERA5)
 - 1000 pairs → 2000 file opens
-**Why not cache?**
+
+**Why not cache file opens during computation?**
 - Multiple AIFS files per day (different init times & lead steps)
-- Multiple pairs can use the same ERA5 daily file, but a simple cache would require grouping pairs by date first
-- For 1–2 week runs (current use case), the complexity isn't justified
+- Multiple pairs can use the same ERA5 daily file, but caching file handles requires grouping pairs by date first
+- For 1–2 week runs (current use case), the added complexity isn't justified
+
+**However**, we DO cache the final **RMSE output** to NetCDF files (`rmse_by_step_*.nc`, etc.) so that plotting and analysis don't need to recompute RMSE from pairs. This is why Figure 5 is now instant (~140ms) instead of 10 seconds.
 
 ### Secondary Bottleneck: Memory During Aggregation
 
@@ -504,9 +505,9 @@ These optimizations would help for multi-month runs or parallel deployments. Not
 
 1. **Cache file opens per day** (Est. **30–50% speedup**, offline computation)
    - Currently: open same ERA5 file multiple times per day during RMSE computation
-   - Proposed: group pairs by date, open each file once, process all pairs, close
+   - Proposed: group pairs by date, open each file once, process all pairs, close (file handle caching)
    - Code change: group pairs by `valid_dt.date()` before the loop in `compute_rmse_outputs.py`
-   - Why not done: offline pre-computation already cached via NetCDF; barely helps for 1–2 week runs; adds code complexity
+   - Why not done: offline pre-computation (with output caching to NetCDF) already eliminates repeated computation; per-file-handle caching adds complexity for small gains on 1–2 week runs
 
 2. **Parallelize pair processing** (Est. **3–6× speedup**)
    - Currently: sequential loop over pairs
