@@ -430,9 +430,11 @@ This project uses Open Data to stay within the retention window.
 
 
 **Where the time goes:**
-1. **RMSE computation dominates** (~70%): `compute_pair_rmse()` in `compute_aifs_era5_rmse.py` is called once per pair. Each call opens a GRIB file and an ERA5 NetCDF, aligns coordinates, crops, and subtracts—typically 1–2 seconds per pair.
+1. **RMSE computation** (~70%): `compute_pair_rmse()` in `compute_aifs_era5_rmse.py` is called once per pair during the pre-computation phase. Each call opens a GRIB file and an ERA5 NetCDF, aligns coordinates, crops, and subtracts per pair. This is done once offline and results are cached to NetCDF.
 2. **Aggregation & plotting** (~25%): stacking grids and rendering scatter maps.
 3. **Downloads & indexing** (~5%): fast unless network is slow.
+
+**Notebook execution** is now fast because it loads pre-computed RMSE from NetCDF files instead of recomputing per pair. See "Completed Optimizations" below. 
 
 ### Main Bottleneck: Per-Pair File I/O
 
@@ -472,17 +474,39 @@ ECMWF Open Data has a soft cap of ~500 simultaneous connections. During busy hou
 
 ---
 
+## Completed Optimizations
+
+### Figure 5: RMSE Distribution by Lead Time (✓ Implemented, ~72× speedup)
+
+**Problem:** Cell 29 (Figure 5) called `compute_pair_rmse()` on-demand for every pair, requiring ~10 seconds to complete (100+ file I/O operations).
+
+**Solution:** Refactored to load pre-computed RMSE grids from `rmse_by_step_*.nc` NetCDF files generated during the `compute_aifs_era5_rmse.py` phase.
+
+**How it works:**
+- Pre-computed files contain full RMSE maps (3D: step × latitude × longitude)
+- Plotting function extracts RMSE values for each lead time, flattens them, and passes to matplotlib's boxplot
+- Shows spatial variability across all grid cells per lead time (more informative than single aggregates)
+
+**Performance:**
+- **Before:** ~10 seconds (on-demand computation per pair)
+- **After:** ~140 milliseconds (cache load + plot)
+- **Speedup:** ~72×
+
+**Trade-off:** Requires `compute_aifs_era5_rmse.py` run first (one-time, part of standard pipeline). Subsequent notebook reruns are instant.
+
+---
+
 ## Possible Improvements
 
 These optimizations would help for multi-month runs or parallel deployments. Not implemented because the current 1–2 week analysis window doesn't justify the added complexity.
 
 ### High-Impact Optimizations
 
-1. **Cache file opens per day** (Est. **30–50% speedup**)
-   - Currently: open same ERA5 file multiple times per day
+1. **Cache file opens per day** (Est. **30–50% speedup**, offline computation)
+   - Currently: open same ERA5 file multiple times per day during RMSE computation
    - Proposed: group pairs by date, open each file once, process all pairs, close
    - Code change: group pairs by `valid_dt.date()` before the loop in `compute_rmse_outputs.py`
-   - Why not done: barely helps for 1–2 week runs; adds code complexity
+   - Why not done: offline pre-computation already cached via NetCDF; barely helps for 1–2 week runs; adds code complexity
 
 2. **Parallelize pair processing** (Est. **3–6× speedup**)
    - Currently: sequential loop over pairs
